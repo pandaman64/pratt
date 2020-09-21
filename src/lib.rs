@@ -114,6 +114,17 @@ impl<'a, 'b> Parser<'a, 'b> {
                 break;
             }
 
+            if let Some((op, bp)) = self.peek_postfix() {
+                if bp < min_bp {
+                    break;
+                }
+
+                self.expect(op)?;
+                self.skip_ws();
+                lhs = Expr::UnaryOp(op.to_string(), Box::new(lhs));
+                continue;
+            }
+
             if let Some((op, lbp, rbp)) = self.peek_infix() {
                 if lbp < min_bp {
                     break;
@@ -124,9 +135,10 @@ impl<'a, 'b> Parser<'a, 'b> {
                 self.skip_ws();
                 let rhs = self.expr(rbp)?;
                 lhs = Expr::BinOp(Box::new(lhs), op.to_string(), Box::new(rhs));
-            } else {
-                bail!("unsupported binop");
+                continue;
             }
+
+            break;
         }
 
         Ok(lhs)
@@ -142,7 +154,15 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn peek_infix(&self) -> Option<(&'b str, u16, u16)> {
         match *self.input {
             s if s.starts_with('+') => Some(("+", 50, 51)),
-            s if s.starts_with('^') => Some(("^", 71, 70)),
+            s if s.starts_with('-') => Some(("-", 50, 51)),
+            s if s.starts_with('^') => Some(("^", 81, 80)),
+            _ => None,
+        }
+    }
+
+    fn peek_postfix(&self) -> Option<(&'b str, u16)> {
+        match *self.input {
+            s if s.starts_with('!') => Some(("!", 70)),
             _ => None,
         }
     }
@@ -195,5 +215,14 @@ mod test {
         let e = parser.expr(0).unwrap();
         assert!(input.is_empty());
         assert_eq!(e.as_sexpr().to_string(), "(+ (+ (- 2) 5) (- (^ 4 2)))");
+    }
+
+    #[test]
+    fn test_postfix() {
+        let mut input = "1 - -2! + 3";
+        let mut parser = Parser::new(&mut input);
+        let e = parser.expr(0).unwrap();
+        assert!(input.is_empty());
+        assert_eq!(e.as_sexpr().to_string(), "(+ (- 1 (- (! 2))) 3)");
     }
 }
