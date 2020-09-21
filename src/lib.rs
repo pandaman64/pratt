@@ -100,6 +100,14 @@ impl<'a, 'b> Parser<'a, 'b> {
             let inner = self.expr(bp)?;
 
             Expr::UnaryOp(op.to_string(), Box::new(inner))
+        } else if self.input.starts_with('(') {
+            // TODO: generic handling
+            self.expect("(")?;
+            self.skip_ws();
+            let inner = self.expr(0)?;
+            self.skip_ws();
+            self.expect(")")?;
+            inner
         } else {
             match self.input.chars().next().context("unexpceted EOF")? {
                 c if '0' <= c && c <= '9' => self.intlit()?,
@@ -224,5 +232,14 @@ mod test {
         let e = parser.expr(0).unwrap();
         assert!(input.is_empty());
         assert_eq!(e.as_sexpr().to_string(), "(+ (- 1 (- (! 2))) 3)");
+    }
+
+    #[test]
+    fn test_paren() {
+        let mut input = "-(2 + 5 + -4)^2";
+        let mut parser = Parser::new(&mut input);
+        let e = parser.expr(0).unwrap();
+        assert!(input.is_empty());
+        assert_eq!(e.as_sexpr().to_string(), "(- (^ (+ (+ 2 5) (- 4)) 2))");
     }
 }
