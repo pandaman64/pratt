@@ -25,6 +25,7 @@ impl fmt::Display for SExpr {
 pub enum Expr {
     UnaryOp(String, Box<Expr>),
     BinOp(Box<Expr>, String, Box<Expr>),
+    ParenOp(String, Box<Expr>),
     IntLit(u64),
     Ident(String),
 }
@@ -39,6 +40,10 @@ impl Expr {
             Expr::BinOp(lhs, op, rhs) => SExpr::Cons {
                 head: op.clone(),
                 tail: vec![lhs.as_sexpr(), rhs.as_sexpr()],
+            },
+            Expr::ParenOp(op, e) => SExpr::Cons {
+                head: op.clone(),
+                tail: vec![e.as_sexpr()],
             },
             Expr::IntLit(v) => SExpr::Atom(v.to_string()),
             Expr::Ident(x) => SExpr::Atom(x.to_string()),
@@ -92,12 +97,20 @@ impl BinOp {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParenOp {
+    op: &'static str,
+    open_symbols: &'static str,
+    close_symbols: &'static str,
+}
+
 pub struct Parser<'a> {
     input: &'a str,
     position: usize,
     infix_table: Vec<BinOp>,
     prefix_table: Vec<UnaryOp>,
     postfix_table: Vec<UnaryOp>,
+    parenfix_table: Vec<ParenOp>,
 }
 impl<'a> Parser<'a> {
     pub fn new(
@@ -105,6 +118,7 @@ impl<'a> Parser<'a> {
         infix_table: Vec<BinOp>,
         prefix_table: Vec<UnaryOp>,
         postfix_table: Vec<UnaryOp>,
+        parenfix_table: Vec<ParenOp>,
     ) -> Self {
         Self {
             input,
@@ -112,6 +126,7 @@ impl<'a> Parser<'a> {
             infix_table,
             prefix_table,
             postfix_table,
+            parenfix_table,
         }
     }
 
@@ -236,14 +251,14 @@ impl<'a> Parser<'a> {
             let inner = self.expr(op.bp)?;
 
             Expr::UnaryOp(op.symbols.to_string(), Box::new(inner))
-        } else if self.remaining().starts_with('(') {
+        } else if let Some(op) = self.peek_parenfix() {
             // TODO: generic handling
-            self.expect("(")?;
+            self.expect(op.open_symbols)?;
             self.skip_ws();
             let inner = self.expr(0)?;
             self.skip_ws();
-            self.expect(")")?;
-            inner
+            self.expect(op.close_symbols)?;
+            Expr::ParenOp(op.op.to_string(), Box::new(inner))
         } else {
             self.primary_expr()?
         };
@@ -325,6 +340,15 @@ impl<'a> Parser<'a> {
         }
         None
     }
+
+    fn peek_parenfix(&self) -> Option<ParenOp> {
+        for op in self.parenfix_table.iter() {
+            if self.peek(op.open_symbols) {
+                return Some(*op);
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -362,7 +386,18 @@ mod test {
             symbols: "!",
             bp: 70,
         }];
-        let mut parser = Parser::new(input, infix_table, prefix_table, postfix_table);
+        let parenfix_table = vec![ParenOp {
+            op: "paren",
+            open_symbols: "(",
+            close_symbols: ")",
+        }];
+        let mut parser = Parser::new(
+            input,
+            infix_table,
+            prefix_table,
+            postfix_table,
+            parenfix_table,
+        );
         let e = parser.expr(0).unwrap();
         assert!(parser.remaining().is_empty());
         assert_eq!(e.as_sexpr().to_string(), expected);
@@ -400,7 +435,7 @@ mod test {
 
     #[test]
     fn test_paren() {
-        success_complete("-(2 + 5 + -4)^2", "(- (^ (+ (+ 2 5) (- 4)) 2))");
+        success_complete("-(2 + 5 + -4)^2", "(- (^ (paren (+ (+ 2 5) (- 4))) 2))");
     }
 
     #[test]
@@ -434,9 +469,42 @@ mod test {
         ];
         let prefix_table = vec![];
         let postfix_table = vec![];
-        let mut parser = Parser::new("Γ ⊢t pre -> post", infix_table, prefix_table, postfix_table);
+        let parenfix_table = vec![];
+        let mut parser = Parser::new(
+            "Γ ⊢t pre -> post",
+            infix_table,
+            prefix_table,
+            postfix_table,
+            parenfix_table,
+        );
         let e = parser.expr(0).unwrap();
         assert!(parser.remaining().is_empty());
         assert_eq!(e.as_sexpr().to_string(), "(⊢t Γ (-> pre post))");
+    }
+
+    #[test]
+    fn test_parens() {
+        let infix_table = vec![BinOp {
+            symbols: "=",
+            bp: 20,
+            left_assoc: true,
+        }];
+        let prefix_table = vec![];
+        let postfix_table = vec![];
+        let parenfix_table = vec![ParenOp {
+            op: "denotation",
+            open_symbols: "[|",
+            close_symbols: "|]",
+        }];
+        let mut parser = Parser::new(
+            "[| t |] = 100",
+            infix_table,
+            prefix_table,
+            postfix_table,
+            parenfix_table,
+        );
+        let e = parser.expr(0).unwrap();
+        assert!(parser.remaining().is_empty());
+        assert_eq!(e.as_sexpr().to_string(), "(= (denotation t) 100)");
     }
 }
