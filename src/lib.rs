@@ -61,24 +61,58 @@ pub struct Token<'a> {
     value: &'a str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnaryOp {
+    symbols: &'static str,
+    bp: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BinOp {
+    symbols: &'static str,
+    bp: u16,
+    left_assoc: bool,
+}
+
+impl BinOp {
+    fn lbp(&self) -> u16 {
+        if self.left_assoc {
+            self.bp
+        } else {
+            self.bp + 1
+        }
+    }
+
+    fn rbp(&self) -> u16 {
+        if self.left_assoc {
+            self.bp + 1
+        } else {
+            self.bp
+        }
+    }
+}
+
 pub struct Parser<'a> {
     input: &'a str,
     position: usize,
+    infix_table: Vec<BinOp>,
+    prefix_table: Vec<UnaryOp>,
+    postfix_table: Vec<UnaryOp>,
 }
-
-macro_rules! symbol {
-    ($value:literal) => {
-        Token {
-            kind: TokenKind::Symbol,
-            value: $value,
-            ..
-        }
-    };
-}
-
 impl<'a> Parser<'a> {
-    pub fn new(input: &'a str) -> Self {
-        Self { input, position: 0 }
+    pub fn new(
+        input: &'a str,
+        infix_table: Vec<BinOp>,
+        prefix_table: Vec<UnaryOp>,
+        postfix_table: Vec<UnaryOp>,
+    ) -> Self {
+        Self {
+            input,
+            position: 0,
+            infix_table,
+            prefix_table,
+            postfix_table,
+        }
     }
 
     pub fn remaining(&self) -> &'a str {
@@ -90,16 +124,17 @@ impl<'a> Parser<'a> {
         self.position += len;
     }
 
-    fn peek_token(&self) -> Result<Token<'a>> {
-        ensure!(!self.remaining().is_empty(), "input is empty");
+    fn peek_token_at(&self, position: usize) -> Result<Token<'a>> {
+        ensure!(
+            self.remaining().is_char_boundary(position),
+            "invalid position"
+        );
+        let input = &self.remaining()[position..];
+        ensure!(!input.is_empty(), "input is empty");
 
-        let token = match self.remaining().chars().next().unwrap() {
+        let token = match input.chars().next().unwrap() {
             '0'..='9' => {
-                let value = self
-                    .remaining()
-                    .split(|c| c < '0' || c > '9')
-                    .next()
-                    .unwrap();
+                let value = input.split(|c| c < '0' || c > '9').next().unwrap();
 
                 Token {
                     kind: TokenKind::IntLit,
@@ -108,11 +143,7 @@ impl<'a> Parser<'a> {
                 }
             }
             c if c.is_whitespace() => {
-                let value = self
-                    .remaining()
-                    .split(|c: char| !c.is_whitespace())
-                    .next()
-                    .unwrap();
+                let value = input.split(|c: char| !c.is_whitespace()).next().unwrap();
 
                 Token {
                     kind: TokenKind::Whitespace,
@@ -121,8 +152,7 @@ impl<'a> Parser<'a> {
                 }
             }
             c if c.is_alphabetic() => {
-                let value = self
-                    .remaining()
+                let value = input
                     .split(|c: char| !(c == '_' || c.is_alphanumeric()))
                     .next()
                     .unwrap();
@@ -135,12 +165,16 @@ impl<'a> Parser<'a> {
             }
             c => Token {
                 kind: TokenKind::Symbol,
-                value: &self.remaining()[0..c.len_utf8()],
+                value: &input[0..c.len_utf8()],
                 position: self.position,
             },
         };
 
         Ok(token)
+    }
+
+    fn peek_token(&self) -> Result<Token<'a>> {
+        self.peek_token_at(0)
     }
 
     fn expect_token(&mut self, token: Token<'a>) -> Result<()> {
@@ -196,12 +230,12 @@ impl<'a> Parser<'a> {
 
     pub fn expr(&mut self, min_bp: u16) -> Result<Expr> {
         // prefix
-        let mut lhs = if let Some((op, bp)) = self.peek_prefix() {
-            self.expect(op)?;
+        let mut lhs = if let Some(op) = self.peek_prefix() {
+            self.expect(op.symbols)?;
             self.skip_ws();
-            let inner = self.expr(bp)?;
+            let inner = self.expr(op.bp)?;
 
-            Expr::UnaryOp(op.to_string(), Box::new(inner))
+            Expr::UnaryOp(op.symbols.to_string(), Box::new(inner))
         } else if self.remaining().starts_with('(') {
             // TODO: generic handling
             self.expect("(")?;
@@ -221,27 +255,27 @@ impl<'a> Parser<'a> {
                 break;
             }
 
-            if let Some((op, bp)) = self.peek_postfix() {
-                if bp < min_bp {
+            if let Some(op) = self.peek_postfix() {
+                if op.bp < min_bp {
                     break;
                 }
 
-                self.expect(op)?;
+                self.expect(op.symbols)?;
                 self.skip_ws();
-                lhs = Expr::UnaryOp(op.to_string(), Box::new(lhs));
+                lhs = Expr::UnaryOp(op.symbols.to_string(), Box::new(lhs));
                 continue;
             }
 
-            if let Some((op, lbp, rbp)) = self.peek_infix() {
-                if lbp < min_bp {
+            if let Some(binop) = self.peek_infix() {
+                if binop.lbp() < min_bp {
                     break;
                 }
 
                 // consume only if parsing the right hand side
-                self.expect(op)?;
+                self.expect(&binop.symbols)?;
                 self.skip_ws();
-                let rhs = self.expr(rbp)?;
-                lhs = Expr::BinOp(Box::new(lhs), op.to_string(), Box::new(rhs));
+                let rhs = self.expr(binop.rbp())?;
+                lhs = Expr::BinOp(Box::new(lhs), binop.symbols.to_string(), Box::new(rhs));
                 continue;
             }
 
@@ -251,27 +285,31 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    fn peek_prefix(&self) -> Option<(&'a str, u16)> {
-        match self.peek_token().ok()? {
-            symbol!("-") => Some(("-", 60)),
-            _ => None,
+    fn peek_infix(&self) -> Option<BinOp> {
+        for op in self.infix_table.iter() {
+            if self.remaining().starts_with(&op.symbols) {
+                return Some(*op);
+            }
         }
+        None
     }
 
-    fn peek_infix(&self) -> Option<(&'a str, u16, u16)> {
-        match self.peek_token().ok()? {
-            symbol!("+") => Some(("+", 50, 51)),
-            symbol!("-") => Some(("-", 50, 51)),
-            symbol!("^") => Some(("^", 81, 80)),
-            _ => None,
+    fn peek_prefix(&self) -> Option<UnaryOp> {
+        for op in self.prefix_table.iter() {
+            if self.remaining().starts_with(&op.symbols) {
+                return Some(*op);
+            }
         }
+        None
     }
 
-    fn peek_postfix(&self) -> Option<(&'a str, u16)> {
-        match self.peek_token().ok()? {
-            symbol!("!") => Some(("!", 70)),
-            _ => None,
+    fn peek_postfix(&self) -> Option<UnaryOp> {
+        for op in self.postfix_table.iter() {
+            if self.remaining().starts_with(&op.symbols) {
+                return Some(*op);
+            }
         }
+        None
     }
 }
 
@@ -280,7 +318,37 @@ mod test {
     use super::*;
 
     fn success_complete(input: &str, expected: &str) {
-        let mut parser = Parser::new(input);
+        let infix_table = vec![
+            BinOp {
+                symbols: "==",
+                bp: 20,
+                left_assoc: true,
+            },
+            BinOp {
+                symbols: "+",
+                bp: 50,
+                left_assoc: true,
+            },
+            BinOp {
+                symbols: "-",
+                bp: 50,
+                left_assoc: true,
+            },
+            BinOp {
+                symbols: "^",
+                bp: 80,
+                left_assoc: false,
+            },
+        ];
+        let prefix_table = vec![UnaryOp {
+            symbols: "-",
+            bp: 60,
+        }];
+        let postfix_table = vec![UnaryOp {
+            symbols: "!",
+            bp: 70,
+        }];
+        let mut parser = Parser::new(input, infix_table, prefix_table, postfix_table);
         let e = parser.expr(0).unwrap();
         assert!(parser.remaining().is_empty());
         assert_eq!(e.as_sexpr().to_string(), expected);
@@ -324,5 +392,15 @@ mod test {
     #[test]
     fn test_ident() {
         success_complete("a^3 + b^3 - c^3", "(- (+ (^ a 3) (^ b 3)) (^ c 3))")
+    }
+
+    #[test]
+    fn test_ident_underscore() {
+        success_complete("a_1 + b__", "(+ a_1 b__)")
+    }
+
+    #[test]
+    fn test_multichar_op() {
+        success_complete("a^3 + b^3 == c^3", "(== (+ (^ a 3) (^ b 3)) (^ c 3))")
     }
 }
