@@ -288,44 +288,40 @@ impl<'a> Parser<'a> {
     // The following functions traverse input token by token to support operators
     // with alphabets and numerals in them.
     // For example, "⊢t xyz" is tokenized as ['⊢', 't', ' ', 'xyz'], while "⊢txyz" is ['⊢', 'txyz'].
-    fn peek_infix(&self) -> Option<BinOp> {
-        'ops: for op in self.infix_table.iter() {
-            for (idx, c) in op.symbols.char_indices() {
-                let mut buf: [u8; 4] = [0, 0, 0, 0];
-                let buf: &mut [u8] = &mut buf;
-                if !matches!(self.peek_token_at(idx), Ok(t) if c.encode_utf8(buf) == t.value) {
-                    continue 'ops;
-                }
+    fn peek(&self, symbols: &str) -> bool {
+        for (idx, c) in symbols.char_indices() {
+            let mut buf: [u8; 4] = [0, 0, 0, 0];
+            let buf: &mut [u8] = &mut buf;
+            if !matches!(self.peek_token_at(idx), Ok(t) if c.encode_utf8(buf) == t.value) {
+                return false;
             }
-            return Some(*op);
+        }
+        true
+    }
+
+    fn peek_infix(&self) -> Option<BinOp> {
+        for op in self.infix_table.iter() {
+            if self.peek(op.symbols) {
+                return Some(*op);
+            }
         }
         None
     }
 
     fn peek_prefix(&self) -> Option<UnaryOp> {
-        'ops: for op in self.prefix_table.iter() {
-            for (idx, c) in op.symbols.char_indices() {
-                let mut buf: [u8; 4] = [0, 0, 0, 0];
-                let buf: &mut [u8] = &mut buf;
-                if !matches!(self.peek_token_at(idx), Ok(t) if c.encode_utf8(buf) == t.value) {
-                    continue 'ops;
-                }
+        for op in self.prefix_table.iter() {
+            if self.peek(op.symbols) {
+                return Some(*op);
             }
-            return Some(*op);
         }
         None
     }
 
     fn peek_postfix(&self) -> Option<UnaryOp> {
-        'ops: for op in self.postfix_table.iter() {
-            for (idx, c) in op.symbols.char_indices() {
-                let mut buf: [u8; 4] = [0, 0, 0, 0];
-                let buf: &mut [u8] = &mut buf;
-                if !matches!(self.peek_token_at(idx), Ok(t) if c.encode_utf8(buf) == t.value) {
-                    continue 'ops;
-                }
+        for op in self.postfix_table.iter() {
+            if self.peek(op.symbols) {
+                return Some(*op);
             }
-            return Some(*op);
         }
         None
     }
