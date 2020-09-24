@@ -44,50 +44,56 @@ impl Expr {
     }
 }
 
-pub struct Parser<'a, 'b> {
-    input: &'a mut &'b str,
+pub struct Parser<'a> {
+    input: &'a str,
+    position: usize,
 }
 
-impl<'a, 'b> Parser<'a, 'b> {
-    pub fn new(input: &'a mut &'b str) -> Self {
-        Self { input }
+impl<'a> Parser<'a> {
+    pub fn new(input: &'a str) -> Self {
+        Self { input, position: 0 }
+    }
+
+    pub fn remaining(&self) -> &'a str {
+        &self.input[self.position..]
     }
 
     fn skip_ws(&mut self) {
-        for (idx, c) in self.input.char_indices() {
+        for (idx, c) in self.remaining().char_indices() {
             if !c.is_whitespace() {
                 self.advance(idx).unwrap();
                 return;
             }
         }
-        self.advance(self.input.len()).unwrap();
+        self.advance(self.remaining().len()).unwrap();
     }
 
     fn expect(&mut self, target: &str) -> Result<()> {
         ensure!(
-            self.input.starts_with(target),
-            "input does not starts with: {}",
-            target
+            self.remaining().starts_with(target),
+            "expected {}, got {}",
+            target,
+            self.remaining(),
         );
         self.advance(target.len())
     }
 
     fn advance(&mut self, len: usize) -> Result<()> {
-        ensure!(self.input.len() >= len, "input is too short");
-        *self.input = &self.input[len..];
+        ensure!(self.remaining().len() >= len, "input is too short");
+        self.position += len;
         Ok(())
     }
 
     fn intlit(&mut self) -> Result<Expr> {
         let len = self
-            .input
+            .remaining()
             .split(|c| c < '0' || c > '9')
             .next()
             .ok_or_else(|| anyhow!("not an integer"))?
             .len();
 
-        let v = self.input[..len].parse()?;
-        *self.input = &self.input[len..];
+        let v = self.remaining()[..len].parse()?;
+        self.advance(len).unwrap();
 
         Ok(Expr::IntLit(v))
     }
@@ -100,7 +106,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             let inner = self.expr(bp)?;
 
             Expr::UnaryOp(op.to_string(), Box::new(inner))
-        } else if self.input.starts_with('(') {
+        } else if self.remaining().starts_with('(') {
             // TODO: generic handling
             self.expect("(")?;
             self.skip_ws();
@@ -109,7 +115,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             self.expect(")")?;
             inner
         } else {
-            match self.input.chars().next().context("unexpceted EOF")? {
+            match self.remaining().chars().next().context("unexpceted EOF")? {
                 c if '0' <= c && c <= '9' => self.intlit()?,
                 c => bail!("unexpected primary expr: {}", c),
             }
@@ -118,7 +124,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         loop {
             self.skip_ws();
 
-            if self.input.is_empty() {
+            if self.remaining().is_empty() {
                 break;
             }
 
@@ -152,15 +158,15 @@ impl<'a, 'b> Parser<'a, 'b> {
         Ok(lhs)
     }
 
-    fn peek_prefix(&self) -> Option<(&'b str, u16)> {
-        match *self.input {
+    fn peek_prefix(&self) -> Option<(&'a str, u16)> {
+        match self.remaining() {
             s if s.starts_with('-') => Some(("-", 60)),
             _ => None,
         }
     }
 
-    fn peek_infix(&self) -> Option<(&'b str, u16, u16)> {
-        match *self.input {
+    fn peek_infix(&self) -> Option<(&'a str, u16, u16)> {
+        match self.remaining() {
             s if s.starts_with('+') => Some(("+", 50, 51)),
             s if s.starts_with('-') => Some(("-", 50, 51)),
             s if s.starts_with('^') => Some(("^", 81, 80)),
@@ -168,8 +174,8 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
     }
 
-    fn peek_postfix(&self) -> Option<(&'b str, u16)> {
-        match *self.input {
+    fn peek_postfix(&self) -> Option<(&'a str, u16)> {
+        match self.remaining() {
             s if s.starts_with('!') => Some(("!", 70)),
             _ => None,
         }
@@ -182,64 +188,57 @@ mod test {
 
     #[test]
     fn test_intlit() {
-        let mut input = "12345";
-        let mut parser = Parser::new(&mut input);
+        let mut parser = Parser::new("12345");
         let e = parser.expr(0).unwrap();
-        assert!(input.is_empty());
+        assert!(parser.remaining().is_empty());
         assert_eq!(e.as_sexpr().to_string(), "12345");
     }
 
     #[test]
     fn test_binop() {
-        let mut input = "123 + 45";
-        let mut parser = Parser::new(&mut input);
+        let mut parser = Parser::new("123 + 45");
         let e = parser.expr(0).unwrap();
-        assert!(input.is_empty());
+        assert!(parser.remaining().is_empty());
         assert_eq!(e.as_sexpr().to_string(), "(+ 123 45)");
     }
 
     #[test]
     fn test_left_assoc() {
-        let mut input = "123 + 45 + 67";
-        let mut parser = Parser::new(&mut input);
+        let mut parser = Parser::new("123 + 45 + 67");
         let e = parser.expr(0).unwrap();
-        assert!(input.is_empty());
+        assert!(parser.remaining().is_empty());
         assert_eq!(e.as_sexpr().to_string(), "(+ (+ 123 45) 67)");
     }
 
     #[test]
     fn test_right_assoc() {
-        let mut input = "2^3^4";
-        let mut parser = Parser::new(&mut input);
+        let mut parser = Parser::new("2^3^4");
         let e = parser.expr(0).unwrap();
-        assert!(input.is_empty());
+        assert!(parser.remaining().is_empty());
         assert_eq!(e.as_sexpr().to_string(), "(^ 2 (^ 3 4))");
     }
 
     #[test]
     fn test_prefix() {
-        let mut input = "-2 + 5 + -4 ^ 2";
-        let mut parser = Parser::new(&mut input);
+        let mut parser = Parser::new("-2 + 5 + -4 ^ 2");
         let e = parser.expr(0).unwrap();
-        assert!(input.is_empty());
+        assert!(parser.remaining().is_empty());
         assert_eq!(e.as_sexpr().to_string(), "(+ (+ (- 2) 5) (- (^ 4 2)))");
     }
 
     #[test]
     fn test_postfix() {
-        let mut input = "1 - -2! + 3";
-        let mut parser = Parser::new(&mut input);
+        let mut parser = Parser::new("1 - -2! + 3");
         let e = parser.expr(0).unwrap();
-        assert!(input.is_empty());
+        assert!(parser.remaining().is_empty());
         assert_eq!(e.as_sexpr().to_string(), "(+ (- 1 (- (! 2))) 3)");
     }
 
     #[test]
     fn test_paren() {
-        let mut input = "-(2 + 5 + -4)^2";
-        let mut parser = Parser::new(&mut input);
+        let mut parser = Parser::new("-(2 + 5 + -4)^2");
         let e = parser.expr(0).unwrap();
-        assert!(input.is_empty());
+        assert!(parser.remaining().is_empty());
         assert_eq!(e.as_sexpr().to_string(), "(- (^ (+ (+ 2 5) (- 4)) 2))");
     }
 }
