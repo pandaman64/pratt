@@ -44,9 +44,34 @@ impl Expr {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenKind {
+    Whitespace,
+    IntLit,
+    Ident,
+    Symbol,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Token<'a> {
+    kind: TokenKind,
+    position: usize,
+    value: &'a str,
+}
+
 pub struct Parser<'a> {
     input: &'a str,
     position: usize,
+}
+
+macro_rules! symbol {
+    ($value:literal) => {
+        Token {
+            kind: TokenKind::Symbol,
+            value: $value,
+            ..
+        }
+    };
 }
 
 impl<'a> Parser<'a> {
@@ -58,14 +83,74 @@ impl<'a> Parser<'a> {
         &self.input[self.position..]
     }
 
+    fn advance(&mut self, len: usize) {
+        assert!(self.remaining().len() >= len, "input is too short");
+        self.position += len;
+    }
+
+    fn peek_token(&self) -> Result<Token<'a>> {
+        ensure!(!self.remaining().is_empty(), "input is empty");
+
+        let token = match self.remaining().chars().next().unwrap() {
+            '0'..='9' => {
+                let value = self
+                    .remaining()
+                    .split(|c| c < '0' || c > '9')
+                    .next()
+                    .unwrap();
+
+                Token {
+                    kind: TokenKind::IntLit,
+                    value,
+                    position: self.position,
+                }
+            }
+            c if c.is_whitespace() => {
+                let value = self
+                    .remaining()
+                    .split(|c: char| !c.is_whitespace())
+                    .next()
+                    .unwrap();
+
+                Token {
+                    kind: TokenKind::Whitespace,
+                    value,
+                    position: self.position,
+                }
+            }
+            c => Token {
+                kind: TokenKind::Symbol,
+                value: &self.remaining()[0..c.len_utf8()],
+                position: self.position,
+            },
+        };
+
+        Ok(token)
+    }
+
+    fn expect_token(&mut self, token: Token<'a>) -> Result<()> {
+        ensure!(
+            matches!(self.peek_token(), Ok(t) if token == t),
+            "expected {:?}, got {}",
+            token,
+            self.remaining()
+        );
+        self.next_token().unwrap();
+        Ok(())
+    }
+
+    fn next_token(&mut self) -> Result<Token<'a>> {
+        let token = self.peek_token()?;
+        self.advance(token.value.len());
+        Ok(token)
+    }
+
     fn skip_ws(&mut self) {
-        for (idx, c) in self.remaining().char_indices() {
-            if !c.is_whitespace() {
-                self.advance(idx).unwrap();
-                return;
+        if let Ok(token) = self.peek_token() {
+            if token.kind == TokenKind::Whitespace {
+                self.expect_token(token).unwrap();
             }
         }
-        self.advance(self.remaining().len()).unwrap();
     }
 
     fn expect(&mut self, target: &str) -> Result<()> {
@@ -75,26 +160,15 @@ impl<'a> Parser<'a> {
             target,
             self.remaining(),
         );
-        self.advance(target.len())
-    }
-
-    fn advance(&mut self, len: usize) -> Result<()> {
-        ensure!(self.remaining().len() >= len, "input is too short");
-        self.position += len;
+        self.advance(target.len());
         Ok(())
     }
 
     fn intlit(&mut self) -> Result<Expr> {
-        let len = self
-            .remaining()
-            .split(|c| c < '0' || c > '9')
-            .next()
-            .ok_or_else(|| anyhow!("not an integer"))?
-            .len();
-
-        let v = self.remaining()[..len].parse()?;
-        self.advance(len).unwrap();
-
+        let token = self.peek_token()?;
+        ensure!(token.kind == TokenKind::IntLit, "not an integer, got {:?}", token);
+        let v = token.value.parse()?;
+        self.expect_token(token).unwrap();
         Ok(Expr::IntLit(v))
     }
 
@@ -159,24 +233,24 @@ impl<'a> Parser<'a> {
     }
 
     fn peek_prefix(&self) -> Option<(&'a str, u16)> {
-        match self.remaining() {
-            s if s.starts_with('-') => Some(("-", 60)),
+        match self.peek_token().ok()? {
+            symbol!("-") => Some(("-", 60)),
             _ => None,
         }
     }
 
     fn peek_infix(&self) -> Option<(&'a str, u16, u16)> {
-        match self.remaining() {
-            s if s.starts_with('+') => Some(("+", 50, 51)),
-            s if s.starts_with('-') => Some(("-", 50, 51)),
-            s if s.starts_with('^') => Some(("^", 81, 80)),
+        match self.peek_token().ok()? {
+            symbol!("+") => Some(("+", 50, 51)),
+            symbol!("-") => Some(("-", 50, 51)),
+            symbol!("^") => Some(("^", 81, 80)),
             _ => None,
         }
     }
 
     fn peek_postfix(&self) -> Option<(&'a str, u16)> {
-        match self.remaining() {
-            s if s.starts_with('!') => Some(("!", 70)),
+        match self.peek_token().ok()? {
+            symbol!("!") => Some(("!", 70)),
             _ => None,
         }
     }
