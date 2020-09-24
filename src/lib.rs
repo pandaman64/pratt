@@ -26,6 +26,7 @@ pub enum Expr {
     UnaryOp(String, Box<Expr>),
     BinOp(Box<Expr>, String, Box<Expr>),
     IntLit(u64),
+    Ident(String),
 }
 
 impl Expr {
@@ -40,6 +41,7 @@ impl Expr {
                 tail: vec![lhs.as_sexpr(), rhs.as_sexpr()],
             },
             Expr::IntLit(v) => SExpr::Atom(v.to_string()),
+            Expr::Ident(x) => SExpr::Atom(x.to_string()),
         }
     }
 }
@@ -118,6 +120,19 @@ impl<'a> Parser<'a> {
                     position: self.position,
                 }
             }
+            c if c.is_alphabetic() => {
+                let value = self
+                    .remaining()
+                    .split(|c: char| !(c == '_' || c.is_alphanumeric()))
+                    .next()
+                    .unwrap();
+
+                Token {
+                    kind: TokenKind::Ident,
+                    value,
+                    position: self.position,
+                }
+            }
             c => Token {
                 kind: TokenKind::Symbol,
                 value: &self.remaining()[0..c.len_utf8()],
@@ -164,12 +179,19 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn intlit(&mut self) -> Result<Expr> {
-        let token = self.peek_token()?;
-        ensure!(token.kind == TokenKind::IntLit, "not an integer, got {:?}", token);
-        let v = token.value.parse()?;
-        self.expect_token(token).unwrap();
-        Ok(Expr::IntLit(v))
+    fn primary_expr(&mut self) -> Result<Expr> {
+        match self.peek_token()? {
+            token if token.kind == TokenKind::IntLit => {
+                let v = token.value.parse()?;
+                self.expect_token(token).unwrap();
+                Ok(Expr::IntLit(v))
+            }
+            token if token.kind == TokenKind::Ident => {
+                self.expect_token(token).unwrap();
+                Ok(Expr::Ident(token.value.to_string()))
+            }
+            token => bail!("expected primary expr, got {:?}", token),
+        }
     }
 
     pub fn expr(&mut self, min_bp: u16) -> Result<Expr> {
@@ -189,10 +211,7 @@ impl<'a> Parser<'a> {
             self.expect(")")?;
             inner
         } else {
-            match self.remaining().chars().next().context("unexpceted EOF")? {
-                c if '0' <= c && c <= '9' => self.intlit()?,
-                c => bail!("unexpected primary expr: {}", c),
-            }
+            self.primary_expr()?
         };
 
         loop {
@@ -260,59 +279,50 @@ impl<'a> Parser<'a> {
 mod test {
     use super::*;
 
-    #[test]
-    fn test_intlit() {
-        let mut parser = Parser::new("12345");
+    fn success_complete(input: &str, expected: &str) {
+        let mut parser = Parser::new(input);
         let e = parser.expr(0).unwrap();
         assert!(parser.remaining().is_empty());
-        assert_eq!(e.as_sexpr().to_string(), "12345");
+        assert_eq!(e.as_sexpr().to_string(), expected);
+    }
+
+    #[test]
+    fn test_intlit() {
+        success_complete("12345", "12345");
     }
 
     #[test]
     fn test_binop() {
-        let mut parser = Parser::new("123 + 45");
-        let e = parser.expr(0).unwrap();
-        assert!(parser.remaining().is_empty());
-        assert_eq!(e.as_sexpr().to_string(), "(+ 123 45)");
+        success_complete("123 + 45", "(+ 123 45)");
     }
 
     #[test]
     fn test_left_assoc() {
-        let mut parser = Parser::new("123 + 45 + 67");
-        let e = parser.expr(0).unwrap();
-        assert!(parser.remaining().is_empty());
-        assert_eq!(e.as_sexpr().to_string(), "(+ (+ 123 45) 67)");
+        success_complete("123 + 45 + 67", "(+ (+ 123 45) 67)");
     }
 
     #[test]
     fn test_right_assoc() {
-        let mut parser = Parser::new("2^3^4");
-        let e = parser.expr(0).unwrap();
-        assert!(parser.remaining().is_empty());
-        assert_eq!(e.as_sexpr().to_string(), "(^ 2 (^ 3 4))");
+        success_complete("2^3^4", "(^ 2 (^ 3 4))");
     }
 
     #[test]
     fn test_prefix() {
-        let mut parser = Parser::new("-2 + 5 + -4 ^ 2");
-        let e = parser.expr(0).unwrap();
-        assert!(parser.remaining().is_empty());
-        assert_eq!(e.as_sexpr().to_string(), "(+ (+ (- 2) 5) (- (^ 4 2)))");
+        success_complete("-2 + 5 + -4 ^ 2", "(+ (+ (- 2) 5) (- (^ 4 2)))");
     }
 
     #[test]
     fn test_postfix() {
-        let mut parser = Parser::new("1 - -2! + 3");
-        let e = parser.expr(0).unwrap();
-        assert!(parser.remaining().is_empty());
-        assert_eq!(e.as_sexpr().to_string(), "(+ (- 1 (- (! 2))) 3)");
+        success_complete("1 - -2! + 3", "(+ (- 1 (- (! 2))) 3)");
     }
 
     #[test]
     fn test_paren() {
-        let mut parser = Parser::new("-(2 + 5 + -4)^2");
-        let e = parser.expr(0).unwrap();
-        assert!(parser.remaining().is_empty());
-        assert_eq!(e.as_sexpr().to_string(), "(- (^ (+ (+ 2 5) (- 4)) 2))");
+        success_complete("-(2 + 5 + -4)^2", "(- (^ (+ (+ 2 5) (- 4)) 2))");
+    }
+
+    #[test]
+    fn test_ident() {
+        success_complete("a^3 + b^3 - c^3", "(- (+ (^ a 3) (^ b 3)) (^ c 3))")
     }
 }
