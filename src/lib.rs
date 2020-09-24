@@ -285,29 +285,47 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
+    // The following functions traverse input token by token to support operators
+    // with alphabets and numerals in them.
+    // For example, "⊢t xyz" is tokenized as ['⊢', 't', ' ', 'xyz'], while "⊢txyz" is ['⊢', 'txyz'].
     fn peek_infix(&self) -> Option<BinOp> {
-        for op in self.infix_table.iter() {
-            if self.remaining().starts_with(&op.symbols) {
-                return Some(*op);
+        'ops: for op in self.infix_table.iter() {
+            for (idx, c) in op.symbols.char_indices() {
+                let mut buf: [u8; 4] = [0, 0, 0, 0];
+                let buf: &mut [u8] = &mut buf;
+                if !matches!(self.peek_token_at(idx), Ok(t) if c.encode_utf8(buf) == t.value) {
+                    continue 'ops;
+                }
             }
+            return Some(*op);
         }
         None
     }
 
     fn peek_prefix(&self) -> Option<UnaryOp> {
-        for op in self.prefix_table.iter() {
-            if self.remaining().starts_with(&op.symbols) {
-                return Some(*op);
+        'ops: for op in self.prefix_table.iter() {
+            for (idx, c) in op.symbols.char_indices() {
+                let mut buf: [u8; 4] = [0, 0, 0, 0];
+                let buf: &mut [u8] = &mut buf;
+                if !matches!(self.peek_token_at(idx), Ok(t) if c.encode_utf8(buf) == t.value) {
+                    continue 'ops;
+                }
             }
+            return Some(*op);
         }
         None
     }
 
     fn peek_postfix(&self) -> Option<UnaryOp> {
-        for op in self.postfix_table.iter() {
-            if self.remaining().starts_with(&op.symbols) {
-                return Some(*op);
+        'ops: for op in self.postfix_table.iter() {
+            for (idx, c) in op.symbols.char_indices() {
+                let mut buf: [u8; 4] = [0, 0, 0, 0];
+                let buf: &mut [u8] = &mut buf;
+                if !matches!(self.peek_token_at(idx), Ok(t) if c.encode_utf8(buf) == t.value) {
+                    continue 'ops;
+                }
             }
+            return Some(*op);
         }
         None
     }
@@ -402,5 +420,27 @@ mod test {
     #[test]
     fn test_multichar_op() {
         success_complete("a^3 + b^3 == c^3", "(== (+ (^ a 3) (^ b 3)) (^ c 3))")
+    }
+
+    #[test]
+    fn test_confusing_op() {
+        let infix_table = vec![
+            BinOp {
+                symbols: "⊢t",
+                bp: 100,
+                left_assoc: true,
+            },
+            BinOp {
+                symbols: "->",
+                bp: 200,
+                left_assoc: false,
+            },
+        ];
+        let prefix_table = vec![];
+        let postfix_table = vec![];
+        let mut parser = Parser::new("Γ ⊢t pre -> post", infix_table, prefix_table, postfix_table);
+        let e = parser.expr(0).unwrap();
+        assert!(parser.remaining().is_empty());
+        assert_eq!(e.as_sexpr().to_string(), "(⊢t Γ (-> pre post))");
     }
 }
