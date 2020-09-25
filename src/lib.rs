@@ -267,7 +267,6 @@ impl<'a> Parser<'a> {
                 children: vec![inner],
             }
         } else if let Some(op) = self.peek_parenfix() {
-            // TODO: generic handling
             self.expect(op.open_symbols)?;
             self.skip_ws();
             let inner = self.expr(0)?;
