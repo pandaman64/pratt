@@ -101,30 +101,26 @@ impl fmt::Display for CST<'_> {
     }
 }
 
-pub struct Parser<'a> {
-    input: &'a str,
-    position: usize,
+#[derive(Debug, Clone, Default)]
+pub struct Language {
     infix_table: Vec<BinOp>,
     prefix_table: Vec<UnaryOp>,
     postfix_table: Vec<UnaryOp>,
     parenfix_table: Vec<ParenOp>,
 }
 
+pub struct Parser<'a> {
+    input: &'a str,
+    language: Language,
+    position: usize,
+}
+
 impl<'a> Parser<'a> {
-    pub fn new(
-        input: &'a str,
-        infix_table: Vec<BinOp>,
-        prefix_table: Vec<UnaryOp>,
-        postfix_table: Vec<UnaryOp>,
-        parenfix_table: Vec<ParenOp>,
-    ) -> Self {
+    pub fn new(input: &'a str, language: Language) -> Self {
         Self {
             input,
+            language,
             position: 0,
-            infix_table,
-            prefix_table,
-            postfix_table,
-            parenfix_table,
         }
     }
 
@@ -338,7 +334,7 @@ impl<'a> Parser<'a> {
     }
 
     fn peek_infix(&self) -> Option<BinOp> {
-        for op in self.infix_table.iter() {
+        for op in self.language.infix_table.iter() {
             if self.peek(op.symbols) {
                 return Some(*op);
             }
@@ -347,7 +343,7 @@ impl<'a> Parser<'a> {
     }
 
     fn peek_prefix(&self) -> Option<UnaryOp> {
-        for op in self.prefix_table.iter() {
+        for op in self.language.prefix_table.iter() {
             if self.peek(op.symbols) {
                 return Some(*op);
             }
@@ -356,7 +352,7 @@ impl<'a> Parser<'a> {
     }
 
     fn peek_postfix(&self) -> Option<UnaryOp> {
-        for op in self.postfix_table.iter() {
+        for op in self.language.postfix_table.iter() {
             if self.peek(op.symbols) {
                 return Some(*op);
             }
@@ -365,7 +361,7 @@ impl<'a> Parser<'a> {
     }
 
     fn peek_parenfix(&self) -> Option<ParenOp> {
-        for op in self.parenfix_table.iter() {
+        for op in self.language.parenfix_table.iter() {
             if self.peek(op.open_symbols) {
                 return Some(*op);
             }
@@ -379,48 +375,44 @@ mod test {
     use super::*;
 
     fn success_complete(input: &str, expected: &str) {
-        let infix_table = vec![
-            BinOp {
-                symbols: "==",
-                bp: 20,
-                left_assoc: true,
-            },
-            BinOp {
-                symbols: "+",
-                bp: 50,
-                left_assoc: true,
-            },
-            BinOp {
+        let language = Language {
+            infix_table: vec![
+                BinOp {
+                    symbols: "==",
+                    bp: 20,
+                    left_assoc: true,
+                },
+                BinOp {
+                    symbols: "+",
+                    bp: 50,
+                    left_assoc: true,
+                },
+                BinOp {
+                    symbols: "-",
+                    bp: 50,
+                    left_assoc: true,
+                },
+                BinOp {
+                    symbols: "^",
+                    bp: 80,
+                    left_assoc: false,
+                },
+            ],
+            prefix_table: vec![UnaryOp {
                 symbols: "-",
-                bp: 50,
-                left_assoc: true,
-            },
-            BinOp {
-                symbols: "^",
-                bp: 80,
-                left_assoc: false,
-            },
-        ];
-        let prefix_table = vec![UnaryOp {
-            symbols: "-",
-            bp: 60,
-        }];
-        let postfix_table = vec![UnaryOp {
-            symbols: "!",
-            bp: 70,
-        }];
-        let parenfix_table = vec![ParenOp {
-            op: "paren",
-            open_symbols: "(",
-            close_symbols: ")",
-        }];
-        let mut parser = Parser::new(
-            input,
-            infix_table,
-            prefix_table,
-            postfix_table,
-            parenfix_table,
-        );
+                bp: 60,
+            }],
+            postfix_table: vec![UnaryOp {
+                symbols: "!",
+                bp: 70,
+            }],
+            parenfix_table: vec![ParenOp {
+                op: "paren",
+                open_symbols: "(",
+                close_symbols: ")",
+            }],
+        };
+        let mut parser = Parser::new(input, language);
         let e = parser.expr(0).unwrap();
         assert!(parser.remaining().is_empty());
         assert_eq!(e.to_string(), expected);
@@ -478,28 +470,22 @@ mod test {
 
     #[test]
     fn test_confusing_op() {
-        let infix_table = vec![
-            BinOp {
-                symbols: "⊢t",
-                bp: 100,
-                left_assoc: true,
-            },
-            BinOp {
-                symbols: "->",
-                bp: 200,
-                left_assoc: false,
-            },
-        ];
-        let prefix_table = vec![];
-        let postfix_table = vec![];
-        let parenfix_table = vec![];
-        let mut parser = Parser::new(
-            "Γ ⊢t pre -> post",
-            infix_table,
-            prefix_table,
-            postfix_table,
-            parenfix_table,
-        );
+        let language = Language {
+            infix_table: vec![
+                BinOp {
+                    symbols: "⊢t",
+                    bp: 100,
+                    left_assoc: true,
+                },
+                BinOp {
+                    symbols: "->",
+                    bp: 200,
+                    left_assoc: false,
+                },
+            ],
+            ..Language::default()
+        };
+        let mut parser = Parser::new("Γ ⊢t pre -> post", language);
         let e = parser.expr(0).unwrap();
         assert!(parser.remaining().is_empty());
         assert_eq!(e.to_string(), "(⊢t Γ (-> pre post))");
@@ -507,25 +493,20 @@ mod test {
 
     #[test]
     fn test_parens() {
-        let infix_table = vec![BinOp {
-            symbols: "=",
-            bp: 20,
-            left_assoc: true,
-        }];
-        let prefix_table = vec![];
-        let postfix_table = vec![];
-        let parenfix_table = vec![ParenOp {
-            op: "denotation",
-            open_symbols: "[|",
-            close_symbols: "|]",
-        }];
-        let mut parser = Parser::new(
-            "[| t |] = 100",
-            infix_table,
-            prefix_table,
-            postfix_table,
-            parenfix_table,
-        );
+        let language = Language {
+            infix_table: vec![BinOp {
+                symbols: "=",
+                bp: 20,
+                left_assoc: true,
+            }],
+            parenfix_table: vec![ParenOp {
+                op: "denotation",
+                open_symbols: "[|",
+                close_symbols: "|]",
+            }],
+            ..Language::default()
+        };
+        let mut parser = Parser::new("[| t |] = 100", language);
         let e = parser.expr(0).unwrap();
         assert!(parser.remaining().is_empty());
         assert_eq!(e.to_string(), "(= (denotation t) 100)");
