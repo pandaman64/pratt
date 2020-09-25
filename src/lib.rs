@@ -2,55 +2,6 @@ use anyhow::*;
 
 use std::fmt;
 
-pub enum SExpr {
-    Atom(String),
-    Cons { head: String, tail: Vec<SExpr> },
-}
-
-impl fmt::Display for SExpr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            SExpr::Atom(s) => write!(f, "{}", s),
-            SExpr::Cons { head, tail } => {
-                write!(f, "({}", head)?;
-                for x in tail.iter() {
-                    write!(f, " {}", x)?;
-                }
-                write!(f, ")")
-            }
-        }
-    }
-}
-
-pub enum Expr {
-    UnaryOp(String, Box<Expr>),
-    BinOp(Box<Expr>, String, Box<Expr>),
-    ParenOp(String, Box<Expr>),
-    IntLit(u64),
-    Ident(String),
-}
-
-impl Expr {
-    pub fn as_sexpr(&self) -> SExpr {
-        match self {
-            Expr::UnaryOp(op, v) => SExpr::Cons {
-                head: op.clone(),
-                tail: vec![v.as_sexpr()],
-            },
-            Expr::BinOp(lhs, op, rhs) => SExpr::Cons {
-                head: op.clone(),
-                tail: vec![lhs.as_sexpr(), rhs.as_sexpr()],
-            },
-            Expr::ParenOp(op, e) => SExpr::Cons {
-                head: op.clone(),
-                tail: vec![e.as_sexpr()],
-            },
-            Expr::IntLit(v) => SExpr::Atom(v.to_string()),
-            Expr::Ident(x) => SExpr::Atom(x.to_string()),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
     Whitespace,
@@ -104,6 +55,52 @@ pub struct ParenOp {
     close_symbols: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeKind<'a> {
+    IntLit(Token<'a>),
+    Ident(Token<'a>),
+    Symbol(Token<'a>),
+    PrefixOp(UnaryOp),
+    PostfixOp(UnaryOp),
+    BinOp(BinOp),
+    ParenOp(ParenOp),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CST<'a> {
+    kind: TreeKind<'a>,
+    // position: usize,
+    // len: usize,
+    children: Vec<CST<'a>>,
+}
+
+impl fmt::Display for CST<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.kind {
+            TreeKind::IntLit(token) | TreeKind::Ident(token) | TreeKind::Symbol(token) => {
+                assert!(self.children.is_empty());
+                write!(f, "{}", token.value)
+            }
+            TreeKind::PrefixOp(op) | TreeKind::PostfixOp(op) => {
+                assert_eq!(self.children.len(), 1);
+                write!(f, "({} {})", op.symbols, self.children[0])
+            }
+            TreeKind::BinOp(op) => {
+                assert_eq!(self.children.len(), 2);
+                write!(
+                    f,
+                    "({} {} {})",
+                    op.symbols, self.children[0], self.children[1]
+                )
+            }
+            TreeKind::ParenOp(op) => {
+                assert_eq!(self.children.len(), 1);
+                write!(f, "({} {})", op.op, self.children[0])
+            }
+        }
+    }
+}
+
 pub struct Parser<'a> {
     input: &'a str,
     position: usize,
@@ -112,6 +109,7 @@ pub struct Parser<'a> {
     postfix_table: Vec<UnaryOp>,
     parenfix_table: Vec<ParenOp>,
 }
+
 impl<'a> Parser<'a> {
     pub fn new(
         input: &'a str,
@@ -217,40 +215,57 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expect(&mut self, target: &str) -> Result<()> {
+    fn expect(&mut self, target: &str) -> Result<Token<'a>> {
         ensure!(
             self.remaining().starts_with(target),
             "expected {}, got {}",
             target,
             self.remaining(),
         );
+        let token = Token {
+            kind: TokenKind::Symbol,
+            position: self.position,
+            value: &self.remaining()[0..target.len()],
+        };
         self.advance(target.len());
-        Ok(())
+        Ok(token)
     }
 
-    fn primary_expr(&mut self) -> Result<Expr> {
+    fn primary_expr(&mut self) -> Result<CST<'a>> {
         match self.peek_token()? {
             token if token.kind == TokenKind::IntLit => {
-                let v = token.value.parse()?;
                 self.expect_token(token).unwrap();
-                Ok(Expr::IntLit(v))
+                Ok(CST {
+                    kind: TreeKind::IntLit(token),
+                    // position: token.position,
+                    // len: token.value.len(),
+                    children: vec![],
+                })
             }
             token if token.kind == TokenKind::Ident => {
                 self.expect_token(token).unwrap();
-                Ok(Expr::Ident(token.value.to_string()))
+                Ok(CST {
+                    kind: TreeKind::Ident(token),
+                    // position: token.position,
+                    // len: token.value.len(),
+                    children: vec![],
+                })
             }
             token => bail!("expected primary expr, got {:?}", token),
         }
     }
 
-    pub fn expr(&mut self, min_bp: u16) -> Result<Expr> {
+    pub fn expr(&mut self, min_bp: u16) -> Result<CST<'a>> {
         // prefix
         let mut lhs = if let Some(op) = self.peek_prefix() {
             self.expect(op.symbols)?;
             self.skip_ws();
             let inner = self.expr(op.bp)?;
 
-            Expr::UnaryOp(op.symbols.to_string(), Box::new(inner))
+            CST {
+                kind: TreeKind::PrefixOp(op),
+                children: vec![inner],
+            }
         } else if let Some(op) = self.peek_parenfix() {
             // TODO: generic handling
             self.expect(op.open_symbols)?;
@@ -258,7 +273,10 @@ impl<'a> Parser<'a> {
             let inner = self.expr(0)?;
             self.skip_ws();
             self.expect(op.close_symbols)?;
-            Expr::ParenOp(op.op.to_string(), Box::new(inner))
+            CST {
+                kind: TreeKind::ParenOp(op),
+                children: vec![inner],
+            }
         } else {
             self.primary_expr()?
         };
@@ -277,20 +295,26 @@ impl<'a> Parser<'a> {
 
                 self.expect(op.symbols)?;
                 self.skip_ws();
-                lhs = Expr::UnaryOp(op.symbols.to_string(), Box::new(lhs));
+                lhs = CST {
+                    kind: TreeKind::PostfixOp(op),
+                    children: vec![lhs],
+                };
                 continue;
             }
 
-            if let Some(binop) = self.peek_infix() {
-                if binop.lbp() < min_bp {
+            if let Some(op) = self.peek_infix() {
+                if op.lbp() < min_bp {
                     break;
                 }
 
                 // consume only if parsing the right hand side
-                self.expect(&binop.symbols)?;
+                self.expect(&op.symbols)?;
                 self.skip_ws();
-                let rhs = self.expr(binop.rbp())?;
-                lhs = Expr::BinOp(Box::new(lhs), binop.symbols.to_string(), Box::new(rhs));
+                let rhs = self.expr(op.rbp())?;
+                lhs = CST {
+                    kind: TreeKind::BinOp(op),
+                    children: vec![lhs, rhs],
+                };
                 continue;
             }
 
@@ -400,7 +424,7 @@ mod test {
         );
         let e = parser.expr(0).unwrap();
         assert!(parser.remaining().is_empty());
-        assert_eq!(e.as_sexpr().to_string(), expected);
+        assert_eq!(e.to_string(), expected);
     }
 
     #[test]
@@ -479,7 +503,7 @@ mod test {
         );
         let e = parser.expr(0).unwrap();
         assert!(parser.remaining().is_empty());
-        assert_eq!(e.as_sexpr().to_string(), "(⊢t Γ (-> pre post))");
+        assert_eq!(e.to_string(), "(⊢t Γ (-> pre post))");
     }
 
     #[test]
@@ -505,6 +529,6 @@ mod test {
         );
         let e = parser.expr(0).unwrap();
         assert!(parser.remaining().is_empty());
-        assert_eq!(e.as_sexpr().to_string(), "(= (denotation t) 100)");
+        assert_eq!(e.to_string(), "(= (denotation t) 100)");
     }
 }
