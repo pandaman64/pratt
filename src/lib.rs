@@ -56,6 +56,13 @@ pub struct ParenOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuantifierOp {
+    quantifier: &'static str,
+    separator: &'static str,
+    bp: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeKind<'a> {
     IntLit(Token<'a>),
     Ident(Token<'a>),
@@ -64,6 +71,7 @@ pub enum TreeKind<'a> {
     PostfixOp(UnaryOp),
     BinOp(BinOp),
     ParenOp(ParenOp),
+    QuantifierOp(QuantifierOp),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +105,14 @@ impl fmt::Display for CST<'_> {
                 assert_eq!(self.children.len(), 1);
                 write!(f, "({} {})", op.op, self.children[0])
             }
+            TreeKind::QuantifierOp(op) => {
+                assert_eq!(self.children.len(), 2);
+                write!(
+                    f,
+                    "({} {} {})",
+                    op.quantifier, self.children[0], self.children[1]
+                )
+            }
         }
     }
 }
@@ -107,6 +123,7 @@ pub struct Language {
     prefix_table: Vec<UnaryOp>,
     postfix_table: Vec<UnaryOp>,
     parenfix_table: Vec<ParenOp>,
+    quantifierfix_table: Vec<QuantifierOp>,
 }
 
 pub struct Parser<'a> {
@@ -253,7 +270,32 @@ impl<'a> Parser<'a> {
 
     pub fn expr(&mut self, min_bp: u16) -> Result<CST<'a>> {
         // prefix
-        let mut lhs = if let Some(op) = self.peek_prefix() {
+        let mut lhs = if let Some(op) = self.peek_quantifierfix() {
+            self.expect(op.quantifier)?;
+            self.skip_ws();
+
+            let token = self.next_token()?;
+            ensure!(
+                token.kind == TokenKind::Ident,
+                "expected ident, got {:?}",
+                token
+            );
+            let ident = CST {
+                kind: TreeKind::Ident(token),
+                children: vec![],
+            };
+            self.skip_ws();
+
+            self.expect(op.separator)?;
+            self.skip_ws();
+
+            let inner = self.expr(op.bp)?;
+
+            CST {
+                kind: TreeKind::QuantifierOp(op),
+                children: vec![ident, inner],
+            }
+        } else if let Some(op) = self.peek_prefix() {
             self.expect(op.symbols)?;
             self.skip_ws();
             let inner = self.expr(op.bp)?;
@@ -368,6 +410,15 @@ impl<'a> Parser<'a> {
         }
         None
     }
+
+    fn peek_quantifierfix(&self) -> Option<QuantifierOp> {
+        for op in self.language.quantifierfix_table.iter() {
+            if self.peek(op.quantifier) {
+                return Some(*op);
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -378,7 +429,7 @@ mod test {
         let language = Language {
             infix_table: vec![
                 BinOp {
-                    symbols: "==",
+                    symbols: "=",
                     bp: 20,
                     left_assoc: true,
                 },
@@ -411,10 +462,20 @@ mod test {
                 open_symbols: "(",
                 close_symbols: ")",
             }],
+            quantifierfix_table: vec![QuantifierOp {
+                quantifier: "∀",
+                separator: ".",
+                bp: 10,
+            }],
         };
         let mut parser = Parser::new(input, language);
         let e = parser.expr(0).unwrap();
-        assert!(parser.remaining().is_empty());
+        eprintln!("{}", e.to_string());
+        assert!(
+            parser.remaining().is_empty(),
+            "input must be consumed, remaining: {}",
+            parser.remaining()
+        );
         assert_eq!(e.to_string(), expected);
     }
 
@@ -465,7 +526,7 @@ mod test {
 
     #[test]
     fn test_multichar_op() {
-        success_complete("a^3 + b^3 == c^3", "(== (+ (^ a 3) (^ b 3)) (^ c 3))")
+        success_complete("a^3 + b^3 = c^3", "(= (+ (^ a 3) (^ b 3)) (^ c 3))")
     }
 
     #[test]
@@ -510,5 +571,10 @@ mod test {
         let e = parser.expr(0).unwrap();
         assert!(parser.remaining().is_empty());
         assert_eq!(e.to_string(), "(= (denotation t) 100)");
+    }
+
+    #[test]
+    fn test_quantifier() {
+        success_complete("∀x. ∀y. x = y", "(∀ x (∀ y (= x y)))")
     }
 }
