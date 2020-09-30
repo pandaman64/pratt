@@ -364,15 +364,21 @@ impl<'a> Parser<'a> {
     // The following functions traverse input token by token to support operators
     // with alphabets and numerals in them.
     // For example, "⊢t xyz" is tokenized as ['⊢', 't', ' ', 'xyz'], while "⊢txyz" is ['⊢', 'txyz'].
-    fn peek(&self, symbols: &str) -> bool {
-        for (idx, c) in symbols.char_indices() {
-            let mut buf: [u8; 4] = [0, 0, 0, 0];
-            let buf: &mut [u8] = &mut buf;
-            if !matches!(self.peek_token_at(idx), Ok(t) if c.encode_utf8(buf) == t.value) {
-                return false;
+    fn peek(&self, mut symbols: &str) -> bool {
+        let mut position = 0;
+        loop {
+            if symbols.is_empty() {
+                return true;
+            }
+
+            match self.peek_token_at(position) {
+                Ok(token) if symbols.starts_with(token.value) => {
+                    symbols = &symbols[token.value.len()..];
+                    position += token.value.len();
+                }
+                _ => return false,
             }
         }
-        true
     }
 
     fn peek_infix(&self) -> Option<BinOp> {
@@ -462,11 +468,18 @@ mod test {
                 open_symbols: "(",
                 close_symbols: ")",
             }],
-            quantifierfix_table: vec![QuantifierOp {
-                quantifier: "∀",
-                separator: ".",
-                bp: 10,
-            }],
+            quantifierfix_table: vec![
+                QuantifierOp {
+                    quantifier: "∀",
+                    separator: ".",
+                    bp: 10,
+                },
+                QuantifierOp {
+                    quantifier: "fun",
+                    separator: "->",
+                    bp: 10,
+                },
+            ],
         };
         let mut parser = Parser::new(input, language);
         let e = parser.expr(0).unwrap();
@@ -575,6 +588,6 @@ mod test {
 
     #[test]
     fn test_quantifier() {
-        success_complete("∀x. ∀y. x = y", "(∀ x (∀ y (= x y)))")
+        success_complete("∀y. (fun x -> y) = fun z -> y", "(∀ y (= (paren (fun x y)) (fun z y)))")
     }
 }
