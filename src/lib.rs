@@ -471,12 +471,12 @@ mod test {
         let mut parser = Parser::new(input, language);
         let e = parser.expr(0).unwrap();
         eprintln!("{}", e.to_string());
+        assert_eq!(e.to_string(), expected);
         assert!(
             parser.remaining().is_empty(),
             "input must be consumed, remaining: {}",
             parser.remaining()
         );
-        assert_eq!(e.to_string(), expected);
     }
 
     #[test]
@@ -548,8 +548,8 @@ mod test {
         };
         let mut parser = Parser::new("Γ ⊢t pre -> post", language);
         let e = parser.expr(0).unwrap();
-        assert!(parser.remaining().is_empty());
         assert_eq!(e.to_string(), "(⊢t Γ (-> pre post))");
+        assert!(parser.remaining().is_empty());
     }
 
     #[test]
@@ -569,8 +569,8 @@ mod test {
         };
         let mut parser = Parser::new("[| t |] = 100", language);
         let e = parser.expr(0).unwrap();
-        assert!(parser.remaining().is_empty());
         assert_eq!(e.to_string(), "(= (denotation t) 100)");
+        assert!(parser.remaining().is_empty());
     }
 
     #[test]
