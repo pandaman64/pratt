@@ -271,7 +271,7 @@ impl<'a> Parser<'a> {
     pub fn expr(&mut self, min_bp: u16) -> Result<CST<'a>> {
         // prefix
         let mut lhs = if let Some(op) = self.peek_quantifierfix() {
-            self.expect(op.quantifier)?;
+            self.expect(op.quantifier).unwrap();
             self.skip_ws();
 
             let token = self.next_token()?;
@@ -296,7 +296,7 @@ impl<'a> Parser<'a> {
                 children: vec![ident, inner],
             }
         } else if let Some(op) = self.peek_prefix() {
-            self.expect(op.symbols)?;
+            self.expect(op.symbols).unwrap();
             self.skip_ws();
             let inner = self.expr(op.bp)?;
 
@@ -305,7 +305,7 @@ impl<'a> Parser<'a> {
                 children: vec![inner],
             }
         } else if let Some(op) = self.peek_parenfix() {
-            self.expect(op.open_symbols)?;
+            self.expect(op.open_symbols).unwrap();
             self.skip_ws();
             let inner = self.expr(0)?;
             self.skip_ws();
@@ -330,7 +330,7 @@ impl<'a> Parser<'a> {
                     break;
                 }
 
-                self.expect(op.symbols)?;
+                self.expect(op.symbols).unwrap();
                 self.skip_ws();
                 lhs = CST {
                     kind: TreeKind::PostfixOp(op),
@@ -345,7 +345,7 @@ impl<'a> Parser<'a> {
                 }
 
                 // consume only if parsing the right hand side
-                self.expect(&op.symbols)?;
+                self.expect(&op.symbols).unwrap();
                 self.skip_ws();
                 let rhs = self.expr(op.rbp())?;
                 lhs = CST {
