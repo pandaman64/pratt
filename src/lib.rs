@@ -19,15 +19,15 @@ pub struct Token<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnaryOp {
-    symbols: &'static str,
-    bp: u16,
+    pub symbols: &'static str,
+    pub bp: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BinOp {
-    symbols: &'static str,
-    bp: u16,
-    left_assoc: bool,
+    pub symbols: &'static str,
+    pub bp: u16,
+    pub left_assoc: bool,
 }
 
 impl BinOp {
@@ -50,16 +50,16 @@ impl BinOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParenOp {
-    op: &'static str,
-    open_symbols: &'static str,
-    close_symbols: &'static str,
+    pub op: &'static str,
+    pub open_symbols: &'static str,
+    pub close_symbols: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuantifierOp {
-    quantifier: &'static str,
-    separator: &'static str,
-    bp: u16,
+    pub quantifier: &'static str,
+    pub separator: &'static str,
+    pub bp: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,11 +119,11 @@ impl fmt::Display for CST<'_> {
 
 #[derive(Debug, Clone, Default)]
 pub struct Language {
-    infix_table: Vec<BinOp>,
-    prefix_table: Vec<UnaryOp>,
-    postfix_table: Vec<UnaryOp>,
-    parenfix_table: Vec<ParenOp>,
-    quantifierfix_table: Vec<QuantifierOp>,
+    pub infix_table: Vec<BinOp>,
+    pub prefix_table: Vec<UnaryOp>,
+    pub postfix_table: Vec<UnaryOp>,
+    pub parenfix_table: Vec<ParenOp>,
+    pub quantifierfix_table: Vec<QuantifierOp>,
 }
 
 pub struct Parser<'a> {
