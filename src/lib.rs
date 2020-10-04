@@ -44,6 +44,12 @@ pub struct Token<'a> {
     value: &'a str,
 }
 
+impl<'a> Token<'a> {
+    fn text_width(&self) -> usize {
+        self.value.len()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnaryOp {
     pub symbols: &'static str,
@@ -396,7 +402,7 @@ impl<'a> Parser<'a> {
 
     pub fn expr(&mut self, min_bp: u16) -> Result<GreenNode<'a>> {
         // prefix
-        let mut lhs = if let Some(op) = self.peek_quantifierfix() {
+        let mut lhs = if let Some(op) = self.peek_quantifierfix(0) {
             let mut children = vec![];
             self.expect(op.quantifier, &mut children).unwrap();
             self.skip_ws(&mut children);
@@ -411,7 +417,7 @@ impl<'a> Parser<'a> {
             children.push(node.into());
 
             GreenNode::new(SyntaxKind::QuantifierOp(op), children)
-        } else if let Some(op) = self.peek_prefix() {
+        } else if let Some(op) = self.peek_prefix(0) {
             let mut children = vec![];
 
             self.expect(op.symbols, &mut children).unwrap();
@@ -421,7 +427,7 @@ impl<'a> Parser<'a> {
             children.push(node.into());
 
             GreenNode::new(SyntaxKind::PrefixOp(op), children)
-        } else if let Some(op) = self.peek_parenfix() {
+        } else if let Some(op) = self.peek_parenfix(0) {
             let mut children = vec![];
 
             self.expect(op.open_symbols, &mut children).unwrap();
@@ -438,42 +444,45 @@ impl<'a> Parser<'a> {
         };
 
         loop {
-            match self.peek_token() {
+            let token = match self.peek_token() {
                 Err(_) => break,
                 Ok(token)
                     if token.kind == SyntaxKind::Whitespace
-                        && token.value.len() == self.remaining().len() =>
+                        && token.text_width() == self.remaining().len() =>
                 {
                     break
                 }
                 Ok(token) => token,
             };
+            // peek next token after whitespaces
+            let skip_width = if token.kind == SyntaxKind::Whitespace {
+                token.text_width()
+            } else {
+                0
+            };
 
-            let mut spaces = vec![];
-            self.skip_ws(&mut spaces);
-
-            if let Some(op) = self.peek_postfix() {
+            if let Some(op) = self.peek_postfix(skip_width) {
                 if op.bp < min_bp {
                     break;
                 }
 
                 let mut children = vec![];
                 children.push(lhs.into());
-                children.extend(spaces);
+                self.skip_ws(&mut children);
                 self.expect(op.symbols, &mut children).unwrap();
                 self.skip_ws(&mut children);
                 lhs = GreenNode::new(SyntaxKind::PostfixOp(op), children);
                 continue;
             }
 
-            if let Some(op) = self.peek_infix() {
+            if let Some(op) = self.peek_infix(skip_width) {
                 if op.lbp() < min_bp {
                     break;
                 }
 
                 let mut children = vec![];
                 children.push(lhs.into());
-                children.extend(spaces);
+                self.skip_ws(&mut children);
                 self.expect(&op.symbols, &mut children).unwrap();
                 self.skip_ws(&mut children);
                 let rhs = self.expr(op.rbp())?;
@@ -491,8 +500,7 @@ impl<'a> Parser<'a> {
     // The following functions traverse input token by token to support operators
     // with alphabets and numerals in them.
     // For example, "⊢t xyz" is tokenized as ['⊢', 't', ' ', 'xyz'], while "⊢txyz" is ['⊢', 'txyz'].
-    fn peek(&self, mut symbols: &str) -> bool {
-        let mut position = 0;
+    fn peek(&self, mut symbols: &str, mut position: usize) -> bool {
         loop {
             if symbols.is_empty() {
                 return true;
@@ -508,45 +516,45 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn peek_infix(&self) -> Option<BinOp> {
+    fn peek_infix(&self, position: usize) -> Option<BinOp> {
         for op in self.language.infix_table.iter() {
-            if self.peek(op.symbols) {
+            if self.peek(op.symbols, position) {
                 return Some(*op);
             }
         }
         None
     }
 
-    fn peek_prefix(&self) -> Option<UnaryOp> {
+    fn peek_prefix(&self, position: usize) -> Option<UnaryOp> {
         for op in self.language.prefix_table.iter() {
-            if self.peek(op.symbols) {
+            if self.peek(op.symbols, position) {
                 return Some(*op);
             }
         }
         None
     }
 
-    fn peek_postfix(&self) -> Option<UnaryOp> {
+    fn peek_postfix(&self, position: usize) -> Option<UnaryOp> {
         for op in self.language.postfix_table.iter() {
-            if self.peek(op.symbols) {
+            if self.peek(op.symbols, position) {
                 return Some(*op);
             }
         }
         None
     }
 
-    fn peek_parenfix(&self) -> Option<ParenOp> {
+    fn peek_parenfix(&self, position: usize) -> Option<ParenOp> {
         for op in self.language.parenfix_table.iter() {
-            if self.peek(op.open_symbols) {
+            if self.peek(op.open_symbols, position) {
                 return Some(*op);
             }
         }
         None
     }
 
-    fn peek_quantifierfix(&self) -> Option<QuantifierOp> {
+    fn peek_quantifierfix(&self, position: usize) -> Option<QuantifierOp> {
         for op in self.language.quantifierfix_table.iter() {
-            if self.peek(op.quantifier) {
+            if self.peek(op.quantifier, position) {
                 return Some(*op);
             }
         }
@@ -617,6 +625,7 @@ mod test {
         let e = parser.expr(0).unwrap();
         let text_width = e.text_width;
         tracing::debug!(%e);
+        tracing::debug!(pretty = %RedNodeData::root(e.clone().into()).pretty_print());
         assert_eq!(
             e.to_string(),
             expected,
@@ -628,13 +637,7 @@ mod test {
             "input must be consumed, remaining: {}",
             parser.remaining()
         );
-        assert_eq!(
-            text_width,
-            input.len(),
-            "\ninput = {}\n{}",
-            input,
-            RedNodeData::root(e.into()).pretty_print()
-        );
+        assert_eq!(text_width, input.len());
     }
 
     #[test]
