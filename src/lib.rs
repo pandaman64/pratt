@@ -95,7 +95,7 @@ pub enum NodeOrToken<'a> {
     Node(Arc<GreenNode<'a>>),
 }
 
-impl NodeOrToken<'_> {
+impl<'a> NodeOrToken<'a> {
     fn text_width(&self) -> usize {
         match self {
             NodeOrToken::Token(token) => token.value.len(),
@@ -108,6 +108,14 @@ impl NodeOrToken<'_> {
             NodeOrToken::Token(token) => token.kind,
             NodeOrToken::Node(node) => node.kind,
         }
+    }
+
+    fn children(&self) -> impl Iterator<Item = &NodeOrToken<'a>> {
+        let children = match self {
+            NodeOrToken::Token(_) => &[],
+            NodeOrToken::Node(node) => node.children.as_slice(),
+        };
+        children.iter()
     }
 }
 
@@ -164,6 +172,72 @@ impl fmt::Display for GreenNode<'_> {
             write!(f, " {}", child)?;
         }
         write!(f, ")")
+    }
+}
+
+pub type RedNode<'a> = Arc<RedNodeData<'a>>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedNodeData<'a> {
+    offset: usize,
+    parent: Option<RedNode<'a>>,
+    green: NodeOrToken<'a>,
+}
+
+impl<'a> RedNodeData<'a> {
+    pub fn root(root: NodeOrToken<'a>) -> RedNode<'a> {
+        Arc::new(RedNodeData {
+            offset: 0,
+            parent: None,
+            green: root,
+        })
+    }
+
+    pub fn parent(&self) -> Option<RedNode<'a>> {
+        self.parent.clone()
+    }
+
+    // elision seems not working
+    pub fn children<'s>(self: &'s RedNode<'a>) -> impl Iterator<Item = RedNode<'a>> + 's {
+        let mut offset = self.offset;
+        self.green.children().map(move |child| {
+            let child_offset = offset;
+            offset += child.text_width();
+            Arc::new(RedNodeData {
+                offset: child_offset,
+                parent: Some(self.clone()),
+                green: child.clone(),
+            })
+        })
+    }
+
+    pub fn pretty_print<'s>(self: &'s RedNode<'a>) -> impl fmt::Display + 's {
+        ShowRedNode::<'s, 'a>(self, 0)
+    }
+}
+
+#[derive(Debug)]
+struct ShowRedNode<'s, 'a>(&'s RedNode<'a>, usize);
+
+impl<'s, 'a> fmt::Display for ShowRedNode<'s, 'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let node = &self.0;
+        let level = self.1;
+        for _ in 0..level {
+            write!(f, "  ")?;
+        }
+        writeln!(
+            f,
+            "{}@{}..{}",
+            node.green.kind(),
+            node.offset,
+            node.offset + node.green.text_width()
+        )?;
+        for child in node.children() {
+            ShowRedNode(&child, level + 1).fmt(f)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -364,12 +438,19 @@ impl<'a> Parser<'a> {
         };
 
         loop {
+            match self.peek_token() {
+                Err(_) => break,
+                Ok(token)
+                    if token.kind == SyntaxKind::Whitespace
+                        && token.value.len() == self.remaining().len() =>
+                {
+                    break
+                }
+                Ok(token) => token,
+            };
+
             let mut spaces = vec![];
             self.skip_ws(&mut spaces);
-
-            if self.remaining().is_empty() {
-                break;
-            }
 
             if let Some(op) = self.peek_postfix() {
                 if op.bp < min_bp {
@@ -534,6 +615,7 @@ mod test {
 
         let mut parser = Parser::new(input, language);
         let e = parser.expr(0).unwrap();
+        let text_width = e.text_width;
         tracing::debug!(%e);
         assert_eq!(
             e.to_string(),
@@ -546,7 +628,13 @@ mod test {
             "input must be consumed, remaining: {}",
             parser.remaining()
         );
-        // assert_eq!(e.text_width, input.len(),);
+        assert_eq!(
+            text_width,
+            input.len(),
+            "\ninput = {}\n{}",
+            input,
+            RedNodeData::root(e.into()).pretty_print()
+        );
     }
 
     #[test]
