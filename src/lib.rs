@@ -326,7 +326,10 @@ impl<'a> Parser<'a> {
             position,
             self.remaining()
         );
+
         let input = &self.remaining()[position..];
+        tracing::trace!(position, input, "peek_token_at");
+
         if input.is_empty() {
             return Token {
                 kind: SyntaxKind::Eof,
@@ -592,6 +595,9 @@ impl<'a> Parser<'a> {
             }
 
             match self.peek_token_at(position) {
+                token if token.kind == SyntaxKind::Eof || token.kind == SyntaxKind::Error => {
+                    return false
+                }
                 token if symbols.starts_with(token.value) => {
                     symbols = &symbols[token.value.len()..];
                     position += token.value.len();
@@ -936,5 +942,10 @@ mod test {
             "((((4",
             "(PAREN ( (PAREN ( (PAREN ( (PAREN ( (PRIM 4) ERROR) ERROR) ERROR) ERROR)",
         )
+    }
+
+    #[test]
+    fn test_empty_error() {
+        error_complete(common_language(), "", "(ERROR)")
     }
 }
