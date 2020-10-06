@@ -46,7 +46,24 @@ pub struct Token<'a> {
     value: &'a str,
 }
 
+impl<'a> fmt::Display for Token<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.kind {
+            SyntaxKind::Error => write!(f, "ERROR"),
+            SyntaxKind::Eof => write!(f, "EOF"),
+            _ => write!(f, "{}", self.value),
+        }
+    }
+}
+
 impl<'a> Token<'a> {
+    fn error() -> Self {
+        Token {
+            kind: SyntaxKind::Error,
+            value: "",
+        }
+    }
+
     fn text_width(&self) -> usize {
         self.value.len()
     }
@@ -130,7 +147,7 @@ impl<'a> NodeOrToken<'a> {
 impl fmt::Display for NodeOrToken<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            NodeOrToken::Token(token) => write!(f, "{}", token.value),
+            NodeOrToken::Token(token) => write!(f, "{}", token),
             NodeOrToken::Node(node) => write!(f, "{}", node),
         }
     }
@@ -372,14 +389,16 @@ impl<'a> Parser<'a> {
 
     fn next_ident(&mut self, children: &mut Vec<NodeOrToken<'a>>) {
         let token = self.peek_token();
-        assert_eq!(
-            token.kind,
-            SyntaxKind::Ident,
-            "expected identifier, got {:?}",
-            token
-        );
-        self.advance(token.value.len());
-        children.push(token.into());
+        match token.kind {
+            SyntaxKind::Ident => {
+                self.advance(token.value.len());
+                children.push(token.into());
+            }
+            _ => {
+                self.push_error(format!("expected identifier, got {:?}", token));
+                children.push(Token::error().into());
+            }
+        }
     }
 
     fn skip_ws(&mut self, children: &mut Vec<NodeOrToken<'a>>) {
@@ -659,20 +678,45 @@ mod test {
         let mut parser = Parser::new(input, language);
         let e = parser.expr(0);
         let text_width = e.text_width;
+        let red = RedNodeData::root(e.clone().into());
         tracing::debug!(%e);
-        tracing::debug!(pretty = %RedNodeData::root(e.clone().into()).pretty_print());
+        tracing::debug!(pretty = %red.pretty_print());
         assert_eq!(
             e.to_string(),
             expected,
-            "parse result doesn't match: {:?}",
-            e
+            "parse result doesn't match: \n{}",
+            red.pretty_print()
         );
+        assert!(parser.errors.is_empty());
         assert!(
             parser.remaining().is_empty(),
             "input must be consumed, remaining: {}",
             parser.remaining()
         );
-        assert!(parser.errors.is_empty());
+        assert_eq!(text_width, input.len());
+    }
+
+    fn error_complete(language: Language, input: &str, expected: &str) {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let mut parser = Parser::new(input, language);
+        let e = parser.expr(0);
+        let text_width = e.text_width;
+        let red = RedNodeData::root(e.clone().into());
+        tracing::debug!(%e);
+        tracing::debug!(pretty = %red.pretty_print());
+        assert_eq!(
+            e.to_string(),
+            expected,
+            "parse result doesn't match: \n{}",
+            red.pretty_print()
+        );
+        assert!(!parser.errors.is_empty());
+        assert!(
+            parser.remaining().is_empty(),
+            "input must be consumed, remaining: {}",
+            parser.remaining()
+        );
         assert_eq!(text_width, input.len());
     }
 
@@ -814,6 +858,15 @@ mod test {
             common_language(),
             "∀y. (fun x -> y) = fun z -> y",
             "(QUANTIFIER ∀ y . (BINARY (PAREN ( (QUANTIFIER fun x -> (PRIM y)) )) = (QUANTIFIER fun z -> (PRIM y))))",
+        )
+    }
+
+    #[test]
+    fn test_missing_ident() {
+        error_complete(
+            common_language(),
+            "∀. x = x",
+            "(QUANTIFIER ∀ ERROR . (BINARY (PRIM x) = (PRIM x)))",
         )
     }
 }
