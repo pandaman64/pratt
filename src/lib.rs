@@ -548,7 +548,7 @@ impl<'a> Parser<'a> {
             // function application
             if lhs.kind != SyntaxKind::Error {
                 // application is left associative
-                const APP_LBP: u16 = 0;
+                const APP_LBP: u16 = 10000;
                 const APP_RBP: u16 = APP_LBP + 1;
 
                 if APP_LBP < min_bp {
@@ -921,5 +921,10 @@ mod test {
             "f x y",
             "(APP (APP (PRIM f) (PRIM x)) (PRIM y))",
         )
+    }
+
+    #[test]
+    fn test_app_precedence() {
+        success_complete(common_language(), "f x + g (y - z)", "(BINARY (APP (PRIM f) (PRIM x)) + (APP (PRIM g) (PAREN ( (BINARY (PRIM y) - (PRIM z)) ))))")
     }
 }
