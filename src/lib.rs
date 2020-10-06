@@ -488,9 +488,8 @@ impl<'a> Parser<'a> {
             self.primary_expr()
         };
 
-        // tracing::debug!("lhs.kind = {}, {}", lhs.kind, lhs.children[0].kind());
-
         loop {
+            tracing::debug!(%lhs);
             let span = tracing::span!(
                 tracing::Level::DEBUG,
                 "expr loop",
