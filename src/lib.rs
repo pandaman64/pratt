@@ -15,6 +15,7 @@ pub enum SyntaxKind {
     BinOp(BinOp),
     ParenOp(ParenOp),
     QuantifierOp(QuantifierOp),
+    Application,
     ExprRoot,
 }
 
@@ -35,6 +36,7 @@ impl fmt::Display for SyntaxKind {
             BinOp(_op) => write!(f, "BINARY"),
             ParenOp(_op) => write!(f, "PAREN"),
             QuantifierOp(_op) => write!(f, "QUANTIFIER"),
+            Application => write!(f, "APP"),
             ExprRoot => write!(f, "EXPR"),
         }
     }
@@ -430,12 +432,12 @@ impl<'a> Parser<'a> {
             }
             token => {
                 self.push_error(format!("expected primary expr, got {:?}", token));
-                GreenNode::new(SyntaxKind::Primitive, vec![Token::error().into()])
+                GreenNode::new(SyntaxKind::Error, vec![])
             }
         }
     }
 
-    pub fn expr(&mut self, min_bp: u16) -> GreenNode<'a> {
+    fn expr_bp(&mut self, min_bp: u16) -> GreenNode<'a> {
         let span = tracing::span!(
             tracing::Level::DEBUG,
             "expr call",
@@ -456,7 +458,7 @@ impl<'a> Parser<'a> {
             self.expect(op.separator, &mut children);
             self.skip_ws(&mut children);
 
-            let node = self.expr(op.bp);
+            let node = self.expr_bp(op.bp);
             children.push(node.into());
 
             GreenNode::new(SyntaxKind::QuantifierOp(op), children)
@@ -466,7 +468,7 @@ impl<'a> Parser<'a> {
             self.expect(op.symbols, &mut children);
             self.skip_ws(&mut children);
 
-            let node = self.expr(op.bp);
+            let node = self.expr_bp(op.bp);
             children.push(node.into());
 
             GreenNode::new(SyntaxKind::PrefixOp(op), children)
@@ -476,7 +478,7 @@ impl<'a> Parser<'a> {
             self.expect(op.open_symbols, &mut children);
             self.skip_ws(&mut children);
 
-            let node = self.expr(0);
+            let node = self.expr_bp(0);
             children.push(node.into());
             self.skip_ws(&mut children);
 
@@ -485,6 +487,8 @@ impl<'a> Parser<'a> {
         } else {
             self.primary_expr()
         };
+
+        // tracing::debug!("lhs.kind = {}, {}", lhs.kind, lhs.children[0].kind());
 
         loop {
             let span = tracing::span!(
@@ -536,16 +540,46 @@ impl<'a> Parser<'a> {
                 self.skip_ws(&mut children);
                 self.expect(&op.symbols, &mut children);
                 self.skip_ws(&mut children);
-                let rhs = self.expr(op.rbp());
+                let rhs = self.expr_bp(op.rbp());
                 children.push(rhs.into());
                 lhs = GreenNode::new(SyntaxKind::BinOp(op), children);
                 continue;
+            }
+
+            // function application
+            if lhs.kind != SyntaxKind::Error {
+                // application is left associative
+                const APP_LBP: u16 = 0;
+                const APP_RBP: u16 = APP_LBP + 1;
+
+                if APP_LBP < min_bp {
+                    break;
+                }
+
+                tracing::debug!("trying function application");
+                let backtrack = self.clone();
+                let mut children = vec![];
+                self.skip_ws(&mut children);
+                let rhs = self.expr_bp(APP_RBP);
+                let consumed = rhs.text_width != 0;
+                children.push(rhs.into());
+                if consumed {
+                    children.insert(0, lhs.into());
+                    lhs = GreenNode::new(SyntaxKind::Application, children);
+                    continue;
+                } else {
+                    *self = backtrack;
+                }
             }
 
             break;
         }
 
         lhs
+    }
+
+    pub fn expr(&mut self) -> GreenNode<'a> {
+        self.expr_bp(0)
     }
 
     // The following functions traverse input token by token to support operators
@@ -673,7 +707,7 @@ mod test {
         let _ = tracing_subscriber::fmt::try_init();
 
         let mut parser = Parser::new(input, language);
-        let e = parser.expr(0);
+        let e = parser.expr();
         let text_width = e.text_width;
         let red = RedNodeData::root(e.clone().into());
         tracing::debug!(%e);
@@ -697,7 +731,7 @@ mod test {
         let _ = tracing_subscriber::fmt::try_init();
 
         let mut parser = Parser::new(input, language);
-        let e = parser.expr(0);
+        let e = parser.expr();
         let text_width = e.text_width;
         let red = RedNodeData::root(e.clone().into());
         tracing::debug!(%e);
@@ -872,7 +906,21 @@ mod test {
         error_complete(
             common_language(),
             "∀. (3 + = ^2)",
-            "(QUANTIFIER ∀ ERROR . (PAREN ( (BINARY (BINARY (PRIM 3) + (PRIM ERROR)) = (BINARY (PRIM ERROR) ^ (PRIM 2))) )))",
+            "(QUANTIFIER ∀ ERROR . (PAREN ( (BINARY (BINARY (PRIM 3) + (ERROR)) = (BINARY (ERROR) ^ (PRIM 2))) )))",
+        )
+    }
+
+    #[test]
+    fn test_simple() {
+        success_complete(common_language(), "(x)", "(PAREN ( (PRIM x) ))")
+    }
+
+    #[test]
+    fn test_fn_app() {
+        success_complete(
+            common_language(),
+            "f x y",
+            "(APP (APP (PRIM f) (PRIM x)) (PRIM y))",
         )
     }
 }
