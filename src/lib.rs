@@ -928,4 +928,13 @@ mod test {
     fn test_app_precedence() {
         success_complete(common_language(), "f x + g (y - z)", "(BINARY (APP (PRIM f) (PRIM x)) + (APP (PRIM g) (PAREN ( (BINARY (PRIM y) - (PRIM z)) ))))")
     }
+
+    #[test]
+    fn test_unbalanced_paren() {
+        error_complete(
+            common_language(),
+            "((((4",
+            "(PAREN ( (PAREN ( (PAREN ( (PAREN ( (PRIM 4) ERROR) ERROR) ERROR) ERROR)",
+        )
+    }
 }
