@@ -1,11 +1,11 @@
-use anyhow::*;
-use std::sync::Arc;
-
 use std::fmt;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxKind {
     Whitespace,
+    Eof,
+    Error,
     IntLit,
     Ident,
     Symbol,
@@ -24,6 +24,8 @@ impl fmt::Display for SyntaxKind {
 
         match self {
             Whitespace => write!(f, "WS"),
+            Eof => write!(f, "EOF"),
+            Error => write!(f, "ERROR"),
             IntLit => write!(f, "INTEGER"),
             Ident => write!(f, "IDENT"),
             Symbol => write!(f, "SYM"),
@@ -256,10 +258,18 @@ pub struct Language {
     pub quantifierfix_table: Vec<QuantifierOp>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ParseError {
+    position: usize,
+    message: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct Parser<'a> {
     input: &'a str,
     language: Language,
     position: usize,
+    errors: Vec<ParseError>,
 }
 
 impl<'a> Parser<'a> {
@@ -268,6 +278,7 @@ impl<'a> Parser<'a> {
             input,
             language,
             position: 0,
+            errors: vec![],
         }
     }
 
@@ -277,18 +288,33 @@ impl<'a> Parser<'a> {
 
     fn advance(&mut self, len: usize) {
         assert!(self.remaining().len() >= len, "input is too short");
+        tracing::debug!("advance: {}", &self.remaining()[0..len]);
         self.position += len;
     }
 
-    fn peek_token_at(&self, position: usize) -> Result<Token<'a>> {
-        ensure!(
+    fn push_error(&mut self, message: String) {
+        self.errors.push(ParseError {
+            position: self.position,
+            message,
+        });
+    }
+
+    fn peek_token_at(&self, position: usize) -> Token<'a> {
+        assert!(
             self.remaining().is_char_boundary(position),
-            "invalid position"
+            "invalid position: {}, remaining = {}",
+            position,
+            self.remaining()
         );
         let input = &self.remaining()[position..];
-        ensure!(!input.is_empty(), "input is empty");
+        if input.is_empty() {
+            return Token {
+                kind: SyntaxKind::Eof,
+                value: "",
+            };
+        }
 
-        let token = match input.chars().next().unwrap() {
+        match input.chars().next().unwrap() {
             '0'..='9' => {
                 let value = input.split(|c| c < '0' || c > '9').next().unwrap();
 
@@ -320,59 +346,51 @@ impl<'a> Parser<'a> {
                 kind: SyntaxKind::Symbol,
                 value: &input[0..c.len_utf8()],
             },
-        };
-
-        Ok(token)
+        }
     }
 
-    fn peek_token(&self) -> Result<Token<'a>> {
+    fn peek_token(&self) -> Token<'a> {
         self.peek_token_at(0)
     }
 
-    fn expect_token(
-        &mut self,
-        token: Token<'a>,
-        children: &mut Vec<NodeOrToken<'a>>,
-    ) -> Result<()> {
-        ensure!(
-            matches!(self.peek_token(), Ok(t) if token == t),
+    fn expect_token(&mut self, token: Token<'a>, children: &mut Vec<NodeOrToken<'a>>) {
+        assert_eq!(
+            self.peek_token(),
+            token,
             "expected {:?}, got {}",
             token,
             self.remaining()
         );
-        self.next_token(children).unwrap();
-        Ok(())
+        self.next_token(children);
     }
 
-    fn next_token(&mut self, children: &mut Vec<NodeOrToken<'a>>) -> Result<()> {
-        let token = self.peek_token()?;
+    fn next_token(&mut self, children: &mut Vec<NodeOrToken<'a>>) {
+        let token = self.peek_token();
         self.advance(token.value.len());
         children.push(token.into());
-        Ok(())
     }
 
-    fn next_ident(&mut self, children: &mut Vec<NodeOrToken<'a>>) -> Result<()> {
-        let token = self.peek_token()?;
-        ensure!(
-            token.kind == SyntaxKind::Ident,
+    fn next_ident(&mut self, children: &mut Vec<NodeOrToken<'a>>) {
+        let token = self.peek_token();
+        assert_eq!(
+            token.kind,
+            SyntaxKind::Ident,
             "expected identifier, got {:?}",
             token
         );
         self.advance(token.value.len());
         children.push(token.into());
-        Ok(())
     }
 
     fn skip_ws(&mut self, children: &mut Vec<NodeOrToken<'a>>) {
-        if let Ok(token) = self.peek_token() {
-            if token.kind == SyntaxKind::Whitespace {
-                self.expect_token(token, children).unwrap();
-            }
+        let token = self.peek_token();
+        if token.kind == SyntaxKind::Whitespace {
+            self.expect_token(token, children);
         }
     }
 
-    fn expect(&mut self, target: &str, children: &mut Vec<NodeOrToken<'a>>) -> Result<()> {
-        ensure!(
+    fn expect(&mut self, target: &str, children: &mut Vec<NodeOrToken<'a>>) {
+        assert!(
             self.remaining().starts_with(target),
             "expected {}, got {}",
             target,
@@ -384,75 +402,92 @@ impl<'a> Parser<'a> {
             value: &self.remaining()[0..target.len()],
         };
         children.push(token.into());
-
         self.advance(target.len());
-        Ok(())
     }
 
-    fn primary_expr(&mut self) -> Result<GreenNode<'a>> {
-        match self.peek_token()? {
+    fn primary_expr(&mut self) -> GreenNode<'a> {
+        match self.peek_token() {
             token if token.kind == SyntaxKind::IntLit || token.kind == SyntaxKind::Ident => {
                 let mut children = vec![];
-                self.expect_token(token, &mut children).unwrap();
-                Ok(GreenNode::new(SyntaxKind::Primitive, children))
+                self.expect_token(token, &mut children);
+                GreenNode::new(SyntaxKind::Primitive, children)
             }
-            token => bail!("expected primary expr, got {:?}", token),
+            token => {
+                self.push_error(format!("expected primary expr, got {:?}", token));
+                GreenNode::new(SyntaxKind::Error, vec![])
+            }
         }
     }
 
-    pub fn expr(&mut self, min_bp: u16) -> Result<GreenNode<'a>> {
+    pub fn expr(&mut self, min_bp: u16) -> GreenNode<'a> {
+        let span = tracing::span!(
+            tracing::Level::DEBUG,
+            "expr call",
+            min_bp,
+            remaining = self.remaining()
+        );
+        let _enter = span.enter();
+
         // prefix
         let mut lhs = if let Some(op) = self.peek_quantifierfix(0) {
             let mut children = vec![];
-            self.expect(op.quantifier, &mut children).unwrap();
+            self.expect(op.quantifier, &mut children);
             self.skip_ws(&mut children);
 
-            self.next_ident(&mut children)?;
+            self.next_ident(&mut children);
             self.skip_ws(&mut children);
 
-            self.expect(op.separator, &mut children)?;
+            self.expect(op.separator, &mut children);
             self.skip_ws(&mut children);
 
-            let node = self.expr(op.bp)?;
+            let node = self.expr(op.bp);
             children.push(node.into());
 
             GreenNode::new(SyntaxKind::QuantifierOp(op), children)
         } else if let Some(op) = self.peek_prefix(0) {
             let mut children = vec![];
 
-            self.expect(op.symbols, &mut children).unwrap();
+            self.expect(op.symbols, &mut children);
             self.skip_ws(&mut children);
 
-            let node = self.expr(op.bp)?;
+            let node = self.expr(op.bp);
             children.push(node.into());
 
             GreenNode::new(SyntaxKind::PrefixOp(op), children)
         } else if let Some(op) = self.peek_parenfix(0) {
             let mut children = vec![];
 
-            self.expect(op.open_symbols, &mut children).unwrap();
+            self.expect(op.open_symbols, &mut children);
             self.skip_ws(&mut children);
 
-            let node = self.expr(0)?;
+            let node = self.expr(0);
             children.push(node.into());
             self.skip_ws(&mut children);
 
-            self.expect(op.close_symbols, &mut children)?;
+            self.expect(op.close_symbols, &mut children);
             GreenNode::new(SyntaxKind::ParenOp(op), children)
         } else {
-            self.primary_expr()?
+            self.primary_expr()
         };
 
         loop {
+            let span = tracing::span!(
+                tracing::Level::DEBUG,
+                "expr loop",
+                min_bp,
+                remaining = self.remaining()
+            );
+            let _enter = span.enter();
+
             let token = match self.peek_token() {
-                Err(_) => break,
-                Ok(token)
+                token if token.kind == SyntaxKind::Eof => break,
+                token
                     if token.kind == SyntaxKind::Whitespace
                         && token.text_width() == self.remaining().len() =>
                 {
-                    break
+                    break;
                 }
-                Ok(token) => token,
+                token => token,
             };
             // peek next token after whitespaces
             let skip_width = if token.kind == SyntaxKind::Whitespace {
@@ -469,7 +504,7 @@ impl<'a> Parser<'a> {
                 let mut children = vec![];
                 children.push(lhs.into());
                 self.skip_ws(&mut children);
-                self.expect(op.symbols, &mut children).unwrap();
+                self.expect(op.symbols, &mut children);
                 self.skip_ws(&mut children);
                 lhs = GreenNode::new(SyntaxKind::PostfixOp(op), children);
                 continue;
@@ -483,9 +518,9 @@ impl<'a> Parser<'a> {
                 let mut children = vec![];
                 children.push(lhs.into());
                 self.skip_ws(&mut children);
-                self.expect(&op.symbols, &mut children).unwrap();
+                self.expect(&op.symbols, &mut children);
                 self.skip_ws(&mut children);
-                let rhs = self.expr(op.rbp())?;
+                let rhs = self.expr(op.rbp());
                 children.push(rhs.into());
                 lhs = GreenNode::new(SyntaxKind::BinOp(op), children);
                 continue;
@@ -494,7 +529,7 @@ impl<'a> Parser<'a> {
             break;
         }
 
-        Ok(lhs)
+        lhs
     }
 
     // The following functions traverse input token by token to support operators
@@ -507,7 +542,7 @@ impl<'a> Parser<'a> {
             }
 
             match self.peek_token_at(position) {
-                Ok(token) if symbols.starts_with(token.value) => {
+                token if symbols.starts_with(token.value) => {
                     symbols = &symbols[token.value.len()..];
                     position += token.value.len();
                 }
@@ -622,7 +657,7 @@ mod test {
         let _ = tracing_subscriber::fmt::try_init();
 
         let mut parser = Parser::new(input, language);
-        let e = parser.expr(0).unwrap();
+        let e = parser.expr(0);
         let text_width = e.text_width;
         tracing::debug!(%e);
         tracing::debug!(pretty = %RedNodeData::root(e.clone().into()).pretty_print());
