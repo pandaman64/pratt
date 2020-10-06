@@ -672,6 +672,7 @@ mod test {
             "input must be consumed, remaining: {}",
             parser.remaining()
         );
+        assert!(parser.errors.is_empty());
         assert_eq!(text_width, input.len());
     }
 
