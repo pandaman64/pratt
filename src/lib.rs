@@ -312,6 +312,7 @@ impl<'a> Parser<'a> {
     }
 
     fn push_error(&mut self, message: String) {
+        tracing::debug!("pushing error: {}", message);
         self.errors.push(ParseError {
             position: self.position,
             message,
