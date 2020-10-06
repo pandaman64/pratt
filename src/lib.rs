@@ -371,14 +371,13 @@ impl<'a> Parser<'a> {
     }
 
     fn expect_token(&mut self, token: Token<'a>, children: &mut Vec<NodeOrToken<'a>>) {
-        assert_eq!(
-            self.peek_token(),
-            token,
-            "expected {:?}, got {}",
-            token,
-            self.remaining()
-        );
-        self.next_token(children);
+        let peeked = self.peek_token();
+        if peeked == token {
+            self.next_token(children);
+        } else {
+            self.push_error(format!("expected {:?}, got {:?}", token, peeked));
+            children.push(Token::error().into());
+        }
     }
 
     fn next_token(&mut self, children: &mut Vec<NodeOrToken<'a>>) {
@@ -409,19 +408,17 @@ impl<'a> Parser<'a> {
     }
 
     fn expect(&mut self, target: &str, children: &mut Vec<NodeOrToken<'a>>) {
-        assert!(
-            self.remaining().starts_with(target),
-            "expected {}, got {}",
-            target,
-            self.remaining(),
-        );
-
-        let token = Token {
-            kind: SyntaxKind::Symbol,
-            value: &self.remaining()[0..target.len()],
-        };
-        children.push(token.into());
-        self.advance(target.len());
+        if self.remaining().starts_with(target) {
+            let token = Token {
+                kind: SyntaxKind::Symbol,
+                value: &self.remaining()[0..target.len()],
+            };
+            children.push(token.into());
+            self.advance(target.len());
+        } else {
+            self.push_error(format!("expected {}, got {}", target, self.remaining()));
+            children.push(Token::error().into());
+        }
     }
 
     fn primary_expr(&mut self) -> GreenNode<'a> {
@@ -433,7 +430,7 @@ impl<'a> Parser<'a> {
             }
             token => {
                 self.push_error(format!("expected primary expr, got {:?}", token));
-                GreenNode::new(SyntaxKind::Error, vec![])
+                GreenNode::new(SyntaxKind::Primitive, vec![Token::error().into()])
             }
         }
     }
@@ -867,6 +864,15 @@ mod test {
             common_language(),
             "∀. x = x",
             "(QUANTIFIER ∀ ERROR . (BINARY (PRIM x) = (PRIM x)))",
+        )
+    }
+
+    #[test]
+    fn test_missing() {
+        error_complete(
+            common_language(),
+            "∀. (3 + = ^2)",
+            "(QUANTIFIER ∀ ERROR . (PAREN ( (BINARY (BINARY (PRIM 3) + (PRIM ERROR)) = (BINARY (PRIM ERROR) ^ (PRIM 2))) )))",
         )
     }
 }
