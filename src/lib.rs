@@ -949,8 +949,8 @@ mod test {
     fn test_comprehension() {
         success_complete(
             common_language(),
-            "{s. s = 10}",
-            "(OP { s . (OP (PRIM s) = (PRIM 10)) })",
+            "{f. ∀x. f (f x) = f}",
+            "(OP { f . (OP ∀ x . (OP (APP (PRIM f) (OP ( (APP (PRIM f) (PRIM x)) ))) = (PRIM f))) })",
         )
     }
 }
