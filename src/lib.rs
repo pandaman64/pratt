@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyntaxKind {
     Whitespace,
     Eof,
@@ -10,11 +10,7 @@ pub enum SyntaxKind {
     Ident,
     Symbol,
     Primitive,
-    PrefixOp(UnaryOp),
-    PostfixOp(UnaryOp),
-    BinOp(BinOp),
-    ParenOp(ParenOp),
-    QuantifierOp(QuantifierOp),
+    Operator(Operator),
     Application,
     ExprRoot,
 }
@@ -31,18 +27,14 @@ impl fmt::Display for SyntaxKind {
             Ident => write!(f, "IDENT"),
             Symbol => write!(f, "SYM"),
             Primitive => write!(f, "PRIM"),
-            PrefixOp(_op) => write!(f, "PREFIX"),
-            PostfixOp(_op) => write!(f, "POSTFIX"),
-            BinOp(_op) => write!(f, "BINARY"),
-            ParenOp(_op) => write!(f, "PAREN"),
-            QuantifierOp(_op) => write!(f, "QUANTIFIER"),
+            Operator(_op) => write!(f, "OP"),
             Application => write!(f, "APP"),
             ExprRoot => write!(f, "EXPR"),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token<'a> {
     kind: SyntaxKind,
     value: &'a str,
@@ -71,51 +63,6 @@ impl<'a> Token<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnaryOp {
-    pub symbols: &'static str,
-    pub bp: u16,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BinOp {
-    pub symbols: &'static str,
-    pub bp: u16,
-    pub left_assoc: bool,
-}
-
-impl BinOp {
-    fn lbp(&self) -> u16 {
-        if self.left_assoc {
-            self.bp
-        } else {
-            self.bp + 1
-        }
-    }
-
-    fn rbp(&self) -> u16 {
-        if self.left_assoc {
-            self.bp + 1
-        } else {
-            self.bp
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ParenOp {
-    pub op: &'static str,
-    pub open_symbols: &'static str,
-    pub close_symbols: &'static str,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QuantifierOp {
-    pub quantifier: &'static str,
-    pub separator: &'static str,
-    pub bp: u16,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeOrToken<'a> {
     Token(Arc<Token<'a>>),
@@ -132,8 +79,8 @@ impl<'a> NodeOrToken<'a> {
 
     fn kind(&self) -> SyntaxKind {
         match self {
-            NodeOrToken::Token(token) => token.kind,
-            NodeOrToken::Node(node) => node.kind,
+            NodeOrToken::Token(token) => token.kind.clone(),
+            NodeOrToken::Node(node) => node.kind.clone(),
         }
     }
 
@@ -191,7 +138,6 @@ impl<'a> GreenNode<'a> {
     }
 }
 
-// TODO: fix
 impl fmt::Display for GreenNode<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "({}", self.kind)?;
@@ -268,13 +214,39 @@ impl<'s, 'a> fmt::Display for ShowRedNode<'s, 'a> {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Fixity {
+    InfixL { bp: u16 },
+    InfixR { bp: u16 },
+    Prefix { right_bp: u16 },
+    Postfix { left_bp: u16 },
+    Closed,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum PlaceholderKind {
+    Ident,
+    Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placeholder {
+    pub kind: PlaceholderKind,
+    pub name: String,
+}
+
+// c.f. "Parsing Mixfix Operators"
+// parts.len() == placeholders.len() + 1
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Operator {
+    fix: Fixity,
+    parts: Vec<String>,
+    placeholders: Vec<Placeholder>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Language {
-    pub infix_table: Vec<BinOp>,
-    pub prefix_table: Vec<UnaryOp>,
-    pub postfix_table: Vec<UnaryOp>,
-    pub parenfix_table: Vec<ParenOp>,
-    pub quantifierfix_table: Vec<QuantifierOp>,
+    pub operators: Vec<Operator>,
 }
 
 #[derive(Debug, Clone)]
@@ -441,6 +413,27 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_operator(&mut self, op: &Operator, children: &mut Vec<NodeOrToken<'a>>) {
+        for i in 0..op.parts.len() {
+            self.expect(&op.parts[i], children);
+            self.skip_ws(children);
+
+            if i < op.placeholders.len() {
+                match &op.placeholders[i].kind {
+                    PlaceholderKind::Expr => {
+                        let node = self.expr_bp(0);
+                        children.push(node.into());
+                        self.skip_ws(children);
+                    }
+                    PlaceholderKind::Ident => {
+                        self.next_ident(children);
+                        self.skip_ws(children);
+                    }
+                }
+            }
+        }
+    }
+
     fn expr_bp(&mut self, min_bp: u16) -> GreenNode<'a> {
         let span = tracing::span!(
             tracing::Level::DEBUG,
@@ -451,49 +444,29 @@ impl<'a> Parser<'a> {
         let _enter = span.enter();
 
         // prefix
-        let mut lhs = if let Some(op) = self.peek_quantifierfix(0) {
-            let mut children = vec![];
-            self.expect(op.quantifier, &mut children);
-            self.skip_ws(&mut children);
-
-            self.next_ident(&mut children);
-            self.skip_ws(&mut children);
-
-            self.expect(op.separator, &mut children);
-            self.skip_ws(&mut children);
-
-            let node = self.expr_bp(op.bp);
-            children.push(node.into());
-
-            GreenNode::new(SyntaxKind::QuantifierOp(op), children)
-        } else if let Some(op) = self.peek_prefix(0) {
+        let mut lhs = if let Some(op) = self.peek_operator(0, |op| match op.fix {
+            Fixity::Prefix { .. } | Fixity::Closed => true,
+            _ => false,
+        }) {
             let mut children = vec![];
 
-            self.expect(op.symbols, &mut children);
-            self.skip_ws(&mut children);
+            self.parse_operator(&op, &mut children);
 
-            let node = self.expr_bp(op.bp);
-            children.push(node.into());
+            match op.fix {
+                Fixity::Prefix { right_bp } => {
+                    let node = self.expr_bp(right_bp);
+                    children.push(node.into());
+                }
+                Fixity::Closed => {}
+                _ => unreachable!(),
+            }
 
-            GreenNode::new(SyntaxKind::PrefixOp(op), children)
-        } else if let Some(op) = self.peek_parenfix(0) {
-            let mut children = vec![];
-
-            self.expect(op.open_symbols, &mut children);
-            self.skip_ws(&mut children);
-
-            let node = self.expr_bp(0);
-            children.push(node.into());
-            self.skip_ws(&mut children);
-
-            self.expect(op.close_symbols, &mut children);
-            GreenNode::new(SyntaxKind::ParenOp(op), children)
+            GreenNode::new(SyntaxKind::Operator(op), children)
         } else {
             self.primary_expr()
         };
 
         loop {
-            tracing::debug!(%lhs);
             let span = tracing::span!(
                 tracing::Level::DEBUG,
                 "expr loop",
@@ -501,6 +474,7 @@ impl<'a> Parser<'a> {
                 remaining = self.remaining()
             );
             let _enter = span.enter();
+            tracing::debug!(%lhs);
 
             let token = match self.peek_token() {
                 token if token.kind == SyntaxKind::Eof => break,
@@ -519,43 +493,58 @@ impl<'a> Parser<'a> {
                 0
             };
 
-            if let Some(op) = self.peek_postfix(skip_width) {
-                if op.bp < min_bp {
-                    break;
+            if let Some(op) = self.peek_operator(skip_width, |op| match op.fix {
+                Fixity::InfixL { .. } | Fixity::InfixR { .. } | Fixity::Postfix { .. } => true,
+                _ => false,
+            }) {
+                tracing::debug!(?op, "hit op");
+                match op.fix {
+                    Fixity::InfixL { bp } => {
+                        if bp <= min_bp {
+                            break;
+                        }
+                    }
+                    Fixity::InfixR { bp } => {
+                        if bp < min_bp {
+                            break;
+                        }
+                    }
+                    Fixity::Postfix { left_bp } => {
+                        if left_bp < min_bp {
+                            break;
+                        }
+                    }
+                    _ => unreachable!(),
                 }
 
                 let mut children = vec![];
                 children.push(lhs.into());
                 self.skip_ws(&mut children);
-                self.expect(op.symbols, &mut children);
-                self.skip_ws(&mut children);
-                lhs = GreenNode::new(SyntaxKind::PostfixOp(op), children);
-                continue;
-            }
 
-            if let Some(op) = self.peek_infix(skip_width) {
-                if op.lbp() < min_bp {
-                    break;
+                self.parse_operator(&op, &mut children);
+
+                match op.fix {
+                    Fixity::Postfix { .. } => {
+                        lhs = GreenNode::new(SyntaxKind::Operator(op.clone()), children);
+                        continue;
+                    }
+                    Fixity::InfixL { bp } | Fixity::InfixR { bp } => {
+                        self.skip_ws(&mut children);
+                        let rhs = self.expr_bp(bp);
+                        children.push(rhs.into());
+                        lhs = GreenNode::new(SyntaxKind::Operator(op.clone()), children);
+                        continue;
+                    }
+                    _ => unreachable!(),
                 }
-
-                let mut children = vec![];
-                children.push(lhs.into());
-                self.skip_ws(&mut children);
-                self.expect(&op.symbols, &mut children);
-                self.skip_ws(&mut children);
-                let rhs = self.expr_bp(op.rbp());
-                children.push(rhs.into());
-                lhs = GreenNode::new(SyntaxKind::BinOp(op), children);
-                continue;
             }
 
             // function application
             if lhs.kind != SyntaxKind::Error {
                 // application is left associative
-                const APP_LBP: u16 = 10000;
-                const APP_RBP: u16 = APP_LBP + 1;
+                const APP_BP: u16 = 10000;
 
-                if APP_LBP < min_bp {
+                if APP_BP <= min_bp {
                     break;
                 }
 
@@ -563,7 +552,7 @@ impl<'a> Parser<'a> {
                 let backtrack = self.clone();
                 let mut children = vec![];
                 self.skip_ws(&mut children);
-                let rhs = self.expr_bp(APP_RBP);
+                let rhs = self.expr_bp(APP_BP);
                 let consumed = rhs.text_width != 0;
                 children.push(rhs.into());
                 if consumed {
@@ -607,46 +596,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn peek_infix(&self, position: usize) -> Option<BinOp> {
-        for op in self.language.infix_table.iter() {
-            if self.peek(op.symbols, position) {
-                return Some(*op);
-            }
-        }
-        None
-    }
-
-    fn peek_prefix(&self, position: usize) -> Option<UnaryOp> {
-        for op in self.language.prefix_table.iter() {
-            if self.peek(op.symbols, position) {
-                return Some(*op);
-            }
-        }
-        None
-    }
-
-    fn peek_postfix(&self, position: usize) -> Option<UnaryOp> {
-        for op in self.language.postfix_table.iter() {
-            if self.peek(op.symbols, position) {
-                return Some(*op);
-            }
-        }
-        None
-    }
-
-    fn peek_parenfix(&self, position: usize) -> Option<ParenOp> {
-        for op in self.language.parenfix_table.iter() {
-            if self.peek(op.open_symbols, position) {
-                return Some(*op);
-            }
-        }
-        None
-    }
-
-    fn peek_quantifierfix(&self, position: usize) -> Option<QuantifierOp> {
-        for op in self.language.quantifierfix_table.iter() {
-            if self.peek(op.quantifier, position) {
-                return Some(*op);
+    fn peek_operator<P>(&self, position: usize, mut pred: P) -> Option<Operator>
+    where
+        P: FnMut(&Operator) -> bool,
+    {
+        for op in self.language.operators.iter() {
+            if pred(op) && self.peek(&op.parts[0], position) {
+                return Some(op.clone());
             }
         }
         None
@@ -659,51 +615,74 @@ mod test {
 
     fn common_language() -> Language {
         Language {
-            infix_table: vec![
-                BinOp {
-                    symbols: "=",
-                    bp: 20,
-                    left_assoc: true,
+            operators: vec![
+                Operator {
+                    fix: Fixity::InfixL { bp: 20 },
+                    parts: vec!["=".into()],
+                    placeholders: vec![],
                 },
-                BinOp {
-                    symbols: "+",
-                    bp: 50,
-                    left_assoc: true,
+                Operator {
+                    fix: Fixity::InfixL { bp: 50 },
+                    parts: vec!["+".into()],
+                    placeholders: vec![],
                 },
-                BinOp {
-                    symbols: "-",
-                    bp: 50,
-                    left_assoc: true,
+                Operator {
+                    fix: Fixity::InfixL { bp: 50 },
+                    parts: vec!["-".into()],
+                    placeholders: vec![],
                 },
-                BinOp {
-                    symbols: "^",
-                    bp: 80,
-                    left_assoc: false,
+                Operator {
+                    fix: Fixity::InfixR { bp: 80 },
+                    parts: vec!["^".into()],
+                    placeholders: vec![],
                 },
-            ],
-            prefix_table: vec![UnaryOp {
-                symbols: "-",
-                bp: 60,
-            }],
-            postfix_table: vec![UnaryOp {
-                symbols: "!",
-                bp: 70,
-            }],
-            parenfix_table: vec![ParenOp {
-                op: "paren",
-                open_symbols: "(",
-                close_symbols: ")",
-            }],
-            quantifierfix_table: vec![
-                QuantifierOp {
-                    quantifier: "∀",
-                    separator: ".",
-                    bp: 10,
+                Operator {
+                    fix: Fixity::Prefix { right_bp: 60 },
+                    parts: vec!["-".into()],
+                    placeholders: vec![],
                 },
-                QuantifierOp {
-                    quantifier: "fun",
-                    separator: "->",
-                    bp: 10,
+                Operator {
+                    fix: Fixity::Postfix { left_bp: 70 },
+                    parts: vec!["!".into()],
+                    placeholders: vec![],
+                },
+                Operator {
+                    fix: Fixity::Closed,
+                    parts: vec!["(".into(), ")".into()],
+                    placeholders: vec![Placeholder {
+                        kind: PlaceholderKind::Expr,
+                        name: "expr".into(),
+                    }],
+                },
+                Operator {
+                    fix: Fixity::Prefix { right_bp: 10 },
+                    parts: vec!["∀".into(), ".".into()],
+                    placeholders: vec![Placeholder {
+                        kind: PlaceholderKind::Ident,
+                        name: "var".into(),
+                    }],
+                },
+                Operator {
+                    fix: Fixity::Prefix { right_bp: 0 },
+                    parts: vec!["fun".into(), "->".into()],
+                    placeholders: vec![Placeholder {
+                        kind: PlaceholderKind::Ident,
+                        name: "var".into(),
+                    }],
+                },
+                Operator {
+                    fix: Fixity::Closed,
+                    parts: vec!["{".into(), ".".into(), "}".into()],
+                    placeholders: vec![
+                        Placeholder {
+                            kind: PlaceholderKind::Ident,
+                            name: "var".into(),
+                        },
+                        Placeholder {
+                            kind: PlaceholderKind::Expr,
+                            name: "pred".into(),
+                        },
+                    ],
                 },
             ],
         }
@@ -764,10 +743,24 @@ mod test {
 
     #[test]
     fn test_binop() {
+        success_complete(common_language(), "123 + 45", "(OP (PRIM 123) + (PRIM 45))");
+    }
+
+    #[test]
+    fn test_prec_left() {
         success_complete(
             common_language(),
-            "123 + 45",
-            "(BINARY (PRIM 123) + (PRIM 45))",
+            "123 ^ 45 + 67",
+            "(OP (OP (PRIM 123) ^ (PRIM 45)) + (PRIM 67))",
+        );
+    }
+
+    #[test]
+    fn test_prec_right() {
+        success_complete(
+            common_language(),
+            "123 + 45 ^ 67",
+            "(OP (PRIM 123) + (OP (PRIM 45) ^ (PRIM 67)))",
         );
     }
 
@@ -776,7 +769,7 @@ mod test {
         success_complete(
             common_language(),
             "123 + 45 + 67",
-            "(BINARY (BINARY (PRIM 123) + (PRIM 45)) + (PRIM 67))",
+            "(OP (OP (PRIM 123) + (PRIM 45)) + (PRIM 67))",
         );
     }
 
@@ -785,7 +778,7 @@ mod test {
         success_complete(
             common_language(),
             "2^3^4",
-            "(BINARY (PRIM 2) ^ (BINARY (PRIM 3) ^ (PRIM 4)))",
+            "(OP (PRIM 2) ^ (OP (PRIM 3) ^ (PRIM 4)))",
         );
     }
 
@@ -794,7 +787,7 @@ mod test {
         success_complete(
             common_language(),
             "-2 + 5 + -4 ^ 2",
-            "(BINARY (BINARY (PREFIX - (PRIM 2)) + (PRIM 5)) + (PREFIX - (BINARY (PRIM 4) ^ (PRIM 2))))"
+            "(OP (OP (OP - (PRIM 2)) + (PRIM 5)) + (OP - (OP (PRIM 4) ^ (PRIM 2))))",
         );
     }
 
@@ -803,7 +796,7 @@ mod test {
         success_complete(
             common_language(),
             "1 - -2! + 3",
-            "(BINARY (BINARY (PRIM 1) - (PREFIX - (POSTFIX (PRIM 2) !))) + (PRIM 3))",
+            "(OP (OP (PRIM 1) - (OP - (OP (PRIM 2) !))) + (PRIM 3))",
         );
     }
 
@@ -812,7 +805,7 @@ mod test {
         success_complete(
             common_language(),
             "-(2 + 5 + -4)^2",
-            "(PREFIX - (BINARY (PAREN ( (BINARY (BINARY (PRIM 2) + (PRIM 5)) + (PREFIX - (PRIM 4))) )) ^ (PRIM 2)))"
+            "(OP - (OP (OP ( (OP (OP (PRIM 2) + (PRIM 5)) + (OP - (PRIM 4))) )) ^ (PRIM 2)))",
         );
     }
 
@@ -821,7 +814,7 @@ mod test {
         success_complete(
             common_language(),
             "a^3 + b^3 - c^3",
-            "(BINARY (BINARY (BINARY (PRIM a) ^ (PRIM 3)) + (BINARY (PRIM b) ^ (PRIM 3))) - (BINARY (PRIM c) ^ (PRIM 3)))",
+            "(OP (OP (OP (PRIM a) ^ (PRIM 3)) + (OP (PRIM b) ^ (PRIM 3))) - (OP (PRIM c) ^ (PRIM 3)))",
         )
     }
 
@@ -830,7 +823,7 @@ mod test {
         success_complete(
             common_language(),
             "a_1 + b__",
-            "(BINARY (PRIM a_1) + (PRIM b__))",
+            "(OP (PRIM a_1) + (PRIM b__))",
         )
     }
 
@@ -839,53 +832,52 @@ mod test {
         success_complete(
             common_language(),
             "a^3 + b^3 = c^3",
-            "(BINARY (BINARY (BINARY (PRIM a) ^ (PRIM 3)) + (BINARY (PRIM b) ^ (PRIM 3))) = (BINARY (PRIM c) ^ (PRIM 3)))",
+            "(OP (OP (OP (PRIM a) ^ (PRIM 3)) + (OP (PRIM b) ^ (PRIM 3))) = (OP (PRIM c) ^ (PRIM 3)))",
         )
     }
 
     #[test]
     fn test_confusing_op() {
         let language = Language {
-            infix_table: vec![
-                BinOp {
-                    symbols: "⊢t",
-                    bp: 100,
-                    left_assoc: true,
-                },
-                BinOp {
-                    symbols: "->",
-                    bp: 200,
-                    left_assoc: false,
-                },
-            ],
-            ..Language::default()
+            operators: vec![Operator {
+                fix: Fixity::InfixL { bp: 100 },
+                parts: vec!["⊢t".into(), "->".into()],
+                placeholders: vec![Placeholder {
+                    kind: PlaceholderKind::Expr,
+                    name: "pre".into(),
+                }],
+            }],
         };
         success_complete(
             language,
             "Γ ⊢t pre -> post",
-            "(BINARY (PRIM Γ) ⊢t (BINARY (PRIM pre) -> (PRIM post)))",
+            "(OP (PRIM Γ) ⊢t (PRIM pre) -> (PRIM post))",
         )
     }
 
     #[test]
     fn test_parens() {
         let language = Language {
-            infix_table: vec![BinOp {
-                symbols: "=",
-                bp: 20,
-                left_assoc: true,
-            }],
-            parenfix_table: vec![ParenOp {
-                op: "denotation",
-                open_symbols: "[|",
-                close_symbols: "|]",
-            }],
-            ..Language::default()
+            operators: vec![
+                Operator {
+                    fix: Fixity::InfixL { bp: 20 },
+                    parts: vec!["=".into()],
+                    placeholders: vec![],
+                },
+                Operator {
+                    fix: Fixity::Closed,
+                    parts: vec!["[|".into(), "|]".into()],
+                    placeholders: vec![Placeholder {
+                        kind: PlaceholderKind::Expr,
+                        name: "term".into(),
+                    }],
+                },
+            ],
         };
         success_complete(
             language,
             "[| t |] = 100",
-            "(BINARY (PAREN [| (PRIM t) |]) = (PRIM 100))",
+            "(OP (OP [| (PRIM t) |]) = (PRIM 100))",
         )
     }
 
@@ -894,7 +886,7 @@ mod test {
         success_complete(
             common_language(),
             "∀y. (fun x -> y) = fun z -> y",
-            "(QUANTIFIER ∀ y . (BINARY (PAREN ( (QUANTIFIER fun x -> (PRIM y)) )) = (QUANTIFIER fun z -> (PRIM y))))",
+            "(OP ∀ y . (OP (OP ( (OP fun x -> (PRIM y)) )) = (OP fun z -> (PRIM y))))",
         )
     }
 
@@ -903,7 +895,7 @@ mod test {
         error_complete(
             common_language(),
             "∀. x = x",
-            "(QUANTIFIER ∀ ERROR . (BINARY (PRIM x) = (PRIM x)))",
+            "(OP ∀ ERROR . (OP (PRIM x) = (PRIM x)))",
         )
     }
 
@@ -912,13 +904,13 @@ mod test {
         error_complete(
             common_language(),
             "∀. (3 + = ^2)",
-            "(QUANTIFIER ∀ ERROR . (PAREN ( (BINARY (BINARY (PRIM 3) + (ERROR)) = (BINARY (ERROR) ^ (PRIM 2))) )))",
+            "(OP ∀ ERROR . (OP ( (OP (OP (PRIM 3) + (ERROR)) = (OP (ERROR) ^ (PRIM 2))) )))",
         )
     }
 
     #[test]
     fn test_simple() {
-        success_complete(common_language(), "(x)", "(PAREN ( (PRIM x) ))")
+        success_complete(common_language(), "(x)", "(OP ( (PRIM x) ))")
     }
 
     #[test]
@@ -932,7 +924,11 @@ mod test {
 
     #[test]
     fn test_app_precedence() {
-        success_complete(common_language(), "f x + g (y - z)", "(BINARY (APP (PRIM f) (PRIM x)) + (APP (PRIM g) (PAREN ( (BINARY (PRIM y) - (PRIM z)) ))))")
+        success_complete(
+            common_language(),
+            "f x + g (y - z)",
+            "(OP (APP (PRIM f) (PRIM x)) + (APP (PRIM g) (OP ( (OP (PRIM y) - (PRIM z)) ))))",
+        )
     }
 
     #[test]
@@ -940,12 +936,21 @@ mod test {
         error_complete(
             common_language(),
             "((((4",
-            "(PAREN ( (PAREN ( (PAREN ( (PAREN ( (PRIM 4) ERROR) ERROR) ERROR) ERROR)",
+            "(OP ( (OP ( (OP ( (OP ( (PRIM 4) ERROR) ERROR) ERROR) ERROR)",
         )
     }
 
     #[test]
     fn test_empty_error() {
         error_complete(common_language(), "", "(ERROR)")
+    }
+
+    #[test]
+    fn test_comprehension() {
+        success_complete(
+            common_language(),
+            "{s. s = 10}",
+            "(OP { s . (OP (PRIM s) = (PRIM 10)) })",
+        )
     }
 }
