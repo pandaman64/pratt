@@ -684,6 +684,20 @@ mod test {
                         },
                     ],
                 },
+                Operator {
+                    fix: Fixity::Prefix { right_bp: 0 },
+                    parts: vec!["let".into(), "=".into(), ";".into()],
+                    placeholders: vec![
+                        Placeholder {
+                            kind: PlaceholderKind::Ident,
+                            name: "var".into(),
+                        },
+                        Placeholder {
+                            kind: PlaceholderKind::Expr,
+                            name: "pred".into(),
+                        },
+                    ],
+                },
             ],
         }
     }
@@ -951,6 +965,16 @@ mod test {
             common_language(),
             "{f. ∀x. f (f x) = f}",
             "(OP { f . (OP ∀ x . (OP (APP (PRIM f) (OP ( (APP (PRIM f) (PRIM x)) ))) = (PRIM f))) })",
+        )
+    }
+
+    #[test]
+    fn test_let() {
+        // TODO: let-in syntax
+        success_complete(
+            common_language(),
+            "let f = fun x -> x; f 100 - 200",
+            "(OP let f = (OP fun x -> (PRIM x)) ; (OP (APP (PRIM f) (PRIM 100)) - (PRIM 200)))",
         )
     }
 }
