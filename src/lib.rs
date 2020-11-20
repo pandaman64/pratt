@@ -260,7 +260,7 @@ pub struct ParseError {
     message: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Parser<'a> {
     input: &'a str,
     language: Language,
@@ -535,8 +535,8 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            // function application
-            if lhs.kind != SyntaxKind::Error {
+            // parse function application if the next non-trivial token can start another expr
+            if lhs.kind != SyntaxKind::Error && self.starts_with_expr(skip_width) {
                 // application is left associative
                 const APP_BP: u16 = 10000;
 
@@ -544,20 +544,16 @@ impl<'a> Parser<'a> {
                     break;
                 }
 
-                tracing::debug!("trying function application");
-                let backtrack = self.clone();
+                tracing::debug!("function application");
                 let mut children = vec![];
+                children.push(lhs.into());
                 self.skip_ws(&mut children);
                 let rhs = self.expr_bp(APP_BP);
-                let consumed = rhs.text_width != 0;
+                // parsing of the argument must consume at least one token
+                assert_ne!(rhs.text_width, 0);
                 children.push(rhs.into());
-                if consumed {
-                    children.insert(0, lhs.into());
-                    lhs = GreenNode::new(SyntaxKind::Application, children);
-                    continue;
-                } else {
-                    *self = backtrack;
-                }
+                lhs = GreenNode::new(SyntaxKind::Application, children);
+                continue;
             }
 
             break;
@@ -622,6 +618,17 @@ impl<'a> Parser<'a> {
             }
         }
         None
+    }
+
+    fn starts_with_expr(&self, position: usize) -> bool {
+        if self.peek_op_expr_start(position, |_| true).is_some() {
+            true
+        } else {
+            match self.peek_token_at(position).kind {
+                SyntaxKind::Ident | SyntaxKind::IntLit => true,
+                _ => false,
+            }
+        }
     }
 }
 
@@ -950,6 +957,15 @@ mod test {
             common_language(),
             "f x y",
             "(APP (APP (PRIM f) (PRIM x)) (PRIM y))",
+        )
+    }
+
+    #[test]
+    fn test_app_paren() {
+        success_complete(
+            common_language(),
+            "f (x)",
+            "(APP (PRIM f) (OP ( (PRIM x) )))",
         )
     }
 
