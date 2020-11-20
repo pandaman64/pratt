@@ -420,9 +420,9 @@ impl<'a> Parser<'a> {
 
             // parse function application if the next non-trivial token can start another expr
             if valid_lhs && self.starts_with_expr(skip_width) {
-                // application is left associative
                 const APP_BP: u16 = 10000;
 
+                // application is left associative
                 if APP_BP <= min_bp {
                     break;
                 }
