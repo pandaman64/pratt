@@ -288,12 +288,10 @@ impl<'a> Parser<'a> {
 
     fn expect(&mut self, target: &str) {
         if self.remaining().starts_with(target) {
-            let token = Token {
-                kind: SyntaxKind::Symbol,
-                value: &self.remaining()[0..target.len()],
-            };
-            self.builder
-                .token(SyntaxKind::Symbol.into(), token.value.into());
+            self.builder.token(
+                SyntaxKind::Symbol.into(),
+                self.remaining()[0..target.len()].into(),
+            );
             self.advance(target.len());
         } else {
             self.push_error(format!("expected {}, got {}", target, self.remaining()));
