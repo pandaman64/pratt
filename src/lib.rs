@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxKind {
     Whitespace,
     Eof,
@@ -10,7 +10,7 @@ pub enum SyntaxKind {
     Ident,
     Symbol,
     Primitive,
-    Operator(Operator),
+    Operator,
     Application,
     ExprRoot,
 }
@@ -27,7 +27,7 @@ impl fmt::Display for SyntaxKind {
             Ident => write!(f, "IDENT"),
             Symbol => write!(f, "SYM"),
             Primitive => write!(f, "PRIM"),
-            Operator(_op) => write!(f, "OP"),
+            Operator => write!(f, "OP"),
             Application => write!(f, "APP"),
             ExprRoot => write!(f, "EXPR"),
         }
@@ -79,8 +79,8 @@ impl<'a> NodeOrToken<'a> {
 
     fn kind(&self) -> SyntaxKind {
         match self {
-            NodeOrToken::Token(token) => token.kind.clone(),
-            NodeOrToken::Node(node) => node.kind.clone(),
+            NodeOrToken::Token(token) => token.kind,
+            NodeOrToken::Node(node) => node.kind,
         }
     }
 
@@ -215,12 +215,16 @@ impl<'s, 'a> fmt::Display for ShowRedNode<'s, 'a> {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum Fixity {
+pub enum ExprStart {
+    Prefix { right_bp: u16 },
+    Closed,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ExprAfter {
     InfixL { bp: u16 },
     InfixR { bp: u16 },
-    Prefix { right_bp: u16 },
     Postfix { left_bp: u16 },
-    Closed,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -238,15 +242,16 @@ pub struct Placeholder {
 // c.f. "Parsing Mixfix Operators"
 // parts.len() == placeholders.len() + 1
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Operator {
-    fix: Fixity,
+pub struct Operator<F> {
+    fix: F,
     parts: Vec<String>,
     placeholders: Vec<Placeholder>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Language {
-    pub operators: Vec<Operator>,
+    pub expr_start: Vec<Operator<ExprStart>>,
+    pub expr_after: Vec<Operator<ExprAfter>>,
 }
 
 #[derive(Debug, Clone)]
@@ -413,7 +418,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_operator(&mut self, op: &Operator, children: &mut Vec<NodeOrToken<'a>>) {
+    fn parse_operator<F>(&mut self, op: &Operator<F>, children: &mut Vec<NodeOrToken<'a>>) {
         for i in 0..op.parts.len() {
             self.expect(&op.parts[i], children);
             self.skip_ws(children);
@@ -444,24 +449,20 @@ impl<'a> Parser<'a> {
         let _enter = span.enter();
 
         // prefix
-        let mut lhs = if let Some(op) = self.peek_operator(0, |op| match op.fix {
-            Fixity::Prefix { .. } | Fixity::Closed => true,
-            _ => false,
-        }) {
+        let mut lhs = if let Some(op) = self.peek_op_expr_start(0, |_| true) {
             let mut children = vec![];
 
             self.parse_operator(&op, &mut children);
 
             match op.fix {
-                Fixity::Prefix { right_bp } => {
+                ExprStart::Prefix { right_bp } => {
                     let node = self.expr_bp(right_bp);
                     children.push(node.into());
                 }
-                Fixity::Closed => {}
-                _ => unreachable!(),
+                ExprStart::Closed => {}
             }
 
-            GreenNode::new(SyntaxKind::Operator(op), children)
+            GreenNode::new(SyntaxKind::Operator, children)
         } else {
             self.primary_expr()
         };
@@ -493,28 +494,24 @@ impl<'a> Parser<'a> {
                 0
             };
 
-            if let Some(op) = self.peek_operator(skip_width, |op| match op.fix {
-                Fixity::InfixL { .. } | Fixity::InfixR { .. } | Fixity::Postfix { .. } => true,
-                _ => false,
-            }) {
+            if let Some(op) = self.peek_op_expr_after(skip_width, |_| true) {
                 tracing::debug!(?op, "hit op");
                 match op.fix {
-                    Fixity::InfixL { bp } => {
+                    ExprAfter::InfixL { bp } => {
                         if bp <= min_bp {
                             break;
                         }
                     }
-                    Fixity::InfixR { bp } => {
+                    ExprAfter::InfixR { bp } => {
                         if bp < min_bp {
                             break;
                         }
                     }
-                    Fixity::Postfix { left_bp } => {
+                    ExprAfter::Postfix { left_bp } => {
                         if left_bp < min_bp {
                             break;
                         }
                     }
-                    _ => unreachable!(),
                 }
 
                 let mut children = vec![];
@@ -524,18 +521,17 @@ impl<'a> Parser<'a> {
                 self.parse_operator(&op, &mut children);
 
                 match op.fix {
-                    Fixity::Postfix { .. } => {
-                        lhs = GreenNode::new(SyntaxKind::Operator(op.clone()), children);
+                    ExprAfter::Postfix { .. } => {
+                        lhs = GreenNode::new(SyntaxKind::Operator, children);
                         continue;
                     }
-                    Fixity::InfixL { bp } | Fixity::InfixR { bp } => {
+                    ExprAfter::InfixL { bp } | ExprAfter::InfixR { bp } => {
                         self.skip_ws(&mut children);
                         let rhs = self.expr_bp(bp);
                         children.push(rhs.into());
-                        lhs = GreenNode::new(SyntaxKind::Operator(op.clone()), children);
+                        lhs = GreenNode::new(SyntaxKind::Operator, children);
                         continue;
                     }
-                    _ => unreachable!(),
                 }
             }
 
@@ -596,11 +592,31 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn peek_operator<P>(&self, position: usize, mut pred: P) -> Option<Operator>
+    fn peek_op_expr_start<P>(&self, position: usize, pred: P) -> Option<Operator<ExprStart>>
     where
-        P: FnMut(&Operator) -> bool,
+        P: FnMut(&Operator<ExprStart>) -> bool,
     {
-        for op in self.language.operators.iter() {
+        self.peek_operator(&self.language.expr_start, position, pred)
+    }
+
+    fn peek_op_expr_after<P>(&self, position: usize, pred: P) -> Option<Operator<ExprAfter>>
+    where
+        P: FnMut(&Operator<ExprAfter>) -> bool,
+    {
+        self.peek_operator(&self.language.expr_after, position, pred)
+    }
+
+    fn peek_operator<F, P>(
+        &self,
+        operators: &[Operator<F>],
+        position: usize,
+        mut pred: P,
+    ) -> Option<Operator<F>>
+    where
+        P: FnMut(&Operator<F>) -> bool,
+        Operator<F>: Clone,
+    {
+        for op in operators.iter() {
             if pred(op) && self.peek(&op.parts[0], position) {
                 return Some(op.clone());
             }
@@ -615,39 +631,14 @@ mod test {
 
     fn common_language() -> Language {
         Language {
-            operators: vec![
+            expr_start: vec![
                 Operator {
-                    fix: Fixity::InfixL { bp: 20 },
-                    parts: vec!["=".into()],
-                    placeholders: vec![],
-                },
-                Operator {
-                    fix: Fixity::InfixL { bp: 50 },
-                    parts: vec!["+".into()],
-                    placeholders: vec![],
-                },
-                Operator {
-                    fix: Fixity::InfixL { bp: 50 },
+                    fix: ExprStart::Prefix { right_bp: 60 },
                     parts: vec!["-".into()],
                     placeholders: vec![],
                 },
                 Operator {
-                    fix: Fixity::InfixR { bp: 80 },
-                    parts: vec!["^".into()],
-                    placeholders: vec![],
-                },
-                Operator {
-                    fix: Fixity::Prefix { right_bp: 60 },
-                    parts: vec!["-".into()],
-                    placeholders: vec![],
-                },
-                Operator {
-                    fix: Fixity::Postfix { left_bp: 70 },
-                    parts: vec!["!".into()],
-                    placeholders: vec![],
-                },
-                Operator {
-                    fix: Fixity::Closed,
+                    fix: ExprStart::Closed,
                     parts: vec!["(".into(), ")".into()],
                     placeholders: vec![Placeholder {
                         kind: PlaceholderKind::Expr,
@@ -655,7 +646,7 @@ mod test {
                     }],
                 },
                 Operator {
-                    fix: Fixity::Prefix { right_bp: 10 },
+                    fix: ExprStart::Prefix { right_bp: 10 },
                     parts: vec!["∀".into(), ".".into()],
                     placeholders: vec![Placeholder {
                         kind: PlaceholderKind::Ident,
@@ -663,7 +654,7 @@ mod test {
                     }],
                 },
                 Operator {
-                    fix: Fixity::Prefix { right_bp: 0 },
+                    fix: ExprStart::Prefix { right_bp: 0 },
                     parts: vec!["fun".into(), "->".into()],
                     placeholders: vec![Placeholder {
                         kind: PlaceholderKind::Ident,
@@ -671,7 +662,7 @@ mod test {
                     }],
                 },
                 Operator {
-                    fix: Fixity::Closed,
+                    fix: ExprStart::Closed,
                     parts: vec!["{".into(), ".".into(), "}".into()],
                     placeholders: vec![
                         Placeholder {
@@ -685,7 +676,7 @@ mod test {
                     ],
                 },
                 Operator {
-                    fix: Fixity::Prefix { right_bp: 0 },
+                    fix: ExprStart::Prefix { right_bp: 0 },
                     parts: vec!["let".into(), "=".into(), ";".into()],
                     placeholders: vec![
                         Placeholder {
@@ -697,6 +688,33 @@ mod test {
                             name: "pred".into(),
                         },
                     ],
+                },
+            ],
+            expr_after: vec![
+                Operator {
+                    fix: ExprAfter::InfixL { bp: 20 },
+                    parts: vec!["=".into()],
+                    placeholders: vec![],
+                },
+                Operator {
+                    fix: ExprAfter::InfixL { bp: 50 },
+                    parts: vec!["+".into()],
+                    placeholders: vec![],
+                },
+                Operator {
+                    fix: ExprAfter::InfixL { bp: 50 },
+                    parts: vec!["-".into()],
+                    placeholders: vec![],
+                },
+                Operator {
+                    fix: ExprAfter::InfixR { bp: 80 },
+                    parts: vec!["^".into()],
+                    placeholders: vec![],
+                },
+                Operator {
+                    fix: ExprAfter::Postfix { left_bp: 70 },
+                    parts: vec!["!".into()],
+                    placeholders: vec![],
                 },
             ],
         }
@@ -853,8 +871,9 @@ mod test {
     #[test]
     fn test_confusing_op() {
         let language = Language {
-            operators: vec![Operator {
-                fix: Fixity::InfixL { bp: 100 },
+            expr_start: vec![],
+            expr_after: vec![Operator {
+                fix: ExprAfter::InfixL { bp: 100 },
                 parts: vec!["⊢t".into(), "->".into()],
                 placeholders: vec![Placeholder {
                     kind: PlaceholderKind::Expr,
@@ -872,21 +891,19 @@ mod test {
     #[test]
     fn test_parens() {
         let language = Language {
-            operators: vec![
-                Operator {
-                    fix: Fixity::InfixL { bp: 20 },
-                    parts: vec!["=".into()],
-                    placeholders: vec![],
-                },
-                Operator {
-                    fix: Fixity::Closed,
-                    parts: vec!["[|".into(), "|]".into()],
-                    placeholders: vec![Placeholder {
-                        kind: PlaceholderKind::Expr,
-                        name: "term".into(),
-                    }],
-                },
-            ],
+            expr_start: vec![Operator {
+                fix: ExprStart::Closed,
+                parts: vec!["[|".into(), "|]".into()],
+                placeholders: vec![Placeholder {
+                    kind: PlaceholderKind::Expr,
+                    name: "term".into(),
+                }],
+            }],
+            expr_after: vec![Operator {
+                fix: ExprAfter::InfixL { bp: 20 },
+                parts: vec!["=".into()],
+                placeholders: vec![],
+            }],
         };
         success_complete(
             language,
