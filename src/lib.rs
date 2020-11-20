@@ -335,7 +335,7 @@ impl<'a> Parser<'a> {
         let checkpoint = self.builder.checkpoint();
 
         // indicates whether the parser can consume at least one token for an expression
-        // if false, an error is emitted and function application is not parsed
+        // if false, an error is emitted and function application is not parsed (to suppress infinite recursion)
         let mut valid_lhs = true;
         if !self.starts_with_expr(0) {
             self.push_error(format!("expected expr, got {:?}", self.peek_token()));
