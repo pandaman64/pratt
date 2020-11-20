@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, num_derive::FromPrimitive)]
 pub enum SyntaxKind {
     Whitespace,
     Eof,
@@ -13,6 +13,21 @@ pub enum SyntaxKind {
     Operator,
     Application,
     ExprRoot,
+}
+
+impl SyntaxKind {
+    fn trivial(&self) -> bool {
+        use SyntaxKind::*;
+
+        match self {
+            Whitespace | Eof => true,
+            _ => false,
+        }
+    }
+
+    fn non_trivial(&self) -> bool {
+        !self.trivial()
+    }
 }
 
 impl fmt::Display for SyntaxKind {
@@ -31,6 +46,28 @@ impl fmt::Display for SyntaxKind {
             Application => write!(f, "APP"),
             ExprRoot => write!(f, "EXPR"),
         }
+    }
+}
+
+impl From<SyntaxKind> for rowan::SyntaxKind {
+    fn from(kind: SyntaxKind) -> Self {
+        rowan::SyntaxKind(kind as u16)
+    }
+}
+
+#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
+struct PrattLanguage;
+
+impl rowan::Language for PrattLanguage {
+    type Kind = SyntaxKind;
+
+    fn kind_from_raw(kind: rowan::SyntaxKind) -> Self::Kind {
+        use num_traits::FromPrimitive;
+        SyntaxKind::from_u16(kind.0).unwrap()
+    }
+
+    fn kind_to_raw(kind: Self::Kind) -> rowan::SyntaxKind {
+        kind.into()
     }
 }
 
@@ -214,6 +251,27 @@ impl<'s, 'a> fmt::Display for ShowRedNode<'s, 'a> {
     }
 }
 
+#[derive(Debug)]
+pub struct PrintSyntaxNode<'a>(&'a rowan::SyntaxNode<PrattLanguage>);
+
+impl fmt::Display for PrintSyntaxNode<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let node = self.0;
+        write!(f, "({}", node.kind())?;
+        for child in node.children_with_tokens() {
+            match child {
+                rowan::SyntaxElement::Node(node) => write!(f, " {}", PrintSyntaxNode(&node))?,
+                rowan::SyntaxElement::Token(token) => {
+                    if token.kind().non_trivial() {
+                        write!(f, " {}", token)?
+                    }
+                }
+            }
+        }
+        write!(f, ")")
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ExprStart {
     Prefix { right_bp: u16 },
@@ -266,6 +324,7 @@ pub struct Parser<'a> {
     language: Language,
     position: usize,
     errors: Vec<ParseError>,
+    builder: rowan::GreenNodeBuilder<'static>,
 }
 
 impl<'a> Parser<'a> {
@@ -275,6 +334,7 @@ impl<'a> Parser<'a> {
             language,
             position: 0,
             errors: vec![],
+            builder: rowan::GreenNodeBuilder::new(),
         }
     }
 
@@ -366,6 +426,7 @@ impl<'a> Parser<'a> {
     fn next_token(&mut self, children: &mut Vec<NodeOrToken<'a>>) {
         let token = self.peek_token();
         self.advance(token.value.len());
+        self.builder.token(token.kind.into(), token.value.into());
         children.push(token.into());
     }
 
@@ -374,6 +435,7 @@ impl<'a> Parser<'a> {
         match token.kind {
             SyntaxKind::Ident => {
                 self.advance(token.value.len());
+                self.builder.token(token.kind.into(), token.value.into());
                 children.push(token.into());
             }
             _ => {
@@ -396,6 +458,8 @@ impl<'a> Parser<'a> {
                 kind: SyntaxKind::Symbol,
                 value: &self.remaining()[0..target.len()],
             };
+            self.builder
+                .token(SyntaxKind::Symbol.into(), token.value.into());
             children.push(token.into());
             self.advance(target.len());
         } else {
@@ -448,10 +512,11 @@ impl<'a> Parser<'a> {
         );
         let _enter = span.enter();
 
-        // prefix
+        let checkpoint = self.builder.checkpoint();
         let mut lhs = if let Some(op) = self.peek_op_expr_start(0, |_| true) {
             let mut children = vec![];
 
+            self.builder.start_node(SyntaxKind::Operator.into());
             self.parse_operator(&op, &mut children);
 
             match op.fix {
@@ -462,9 +527,13 @@ impl<'a> Parser<'a> {
                 ExprStart::Closed => {}
             }
 
+            self.builder.finish_node();
             GreenNode::new(SyntaxKind::Operator, children)
         } else {
-            self.primary_expr()
+            self.builder.start_node(SyntaxKind::Primitive.into());
+            let lhs = self.primary_expr();
+            self.builder.finish_node();
+            lhs
         };
 
         loop {
@@ -514,6 +583,8 @@ impl<'a> Parser<'a> {
                     }
                 }
 
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::Operator.into());
                 let mut children = vec![];
                 children.push(lhs.into());
                 self.skip_ws(&mut children);
@@ -523,6 +594,7 @@ impl<'a> Parser<'a> {
                 match op.fix {
                     ExprAfter::Postfix { .. } => {
                         lhs = GreenNode::new(SyntaxKind::Operator, children);
+                        self.builder.finish_node();
                         continue;
                     }
                     ExprAfter::InfixL { bp } | ExprAfter::InfixR { bp } => {
@@ -530,6 +602,7 @@ impl<'a> Parser<'a> {
                         let rhs = self.expr_bp(bp);
                         children.push(rhs.into());
                         lhs = GreenNode::new(SyntaxKind::Operator, children);
+                        self.builder.finish_node();
                         continue;
                     }
                 }
@@ -545,6 +618,8 @@ impl<'a> Parser<'a> {
                 }
 
                 tracing::debug!("function application");
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::Application.into());
                 let mut children = vec![];
                 children.push(lhs.into());
                 self.skip_ws(&mut children);
@@ -553,6 +628,7 @@ impl<'a> Parser<'a> {
                 assert_ne!(rhs.text_width, 0);
                 children.push(rhs.into());
                 lhs = GreenNode::new(SyntaxKind::Application, children);
+                self.builder.finish_node();
                 continue;
             }
 
@@ -563,7 +639,10 @@ impl<'a> Parser<'a> {
     }
 
     pub fn expr(&mut self) -> GreenNode<'a> {
-        self.expr_bp(0)
+        self.builder.start_node(SyntaxKind::ExprRoot.into());
+        let node = self.expr_bp(0);
+        self.builder.finish_node();
+        node
     }
 
     // The following functions traverse input token by token to support operators
@@ -734,7 +813,7 @@ mod test {
         let e = parser.expr();
         let text_width = e.text_width;
         let red = RedNodeData::root(e.clone().into());
-        tracing::debug!(%e);
+        tracing::info!(%e);
         tracing::debug!(pretty = %red.pretty_print());
         assert_eq!(
             e.to_string(),
@@ -749,6 +828,17 @@ mod test {
             parser.remaining()
         );
         assert_eq!(text_width, input.len());
+
+        let root: rowan::SyntaxNode<PrattLanguage> =
+            rowan::SyntaxNode::new_root(parser.builder.finish());
+        tracing::debug!("{:#?}", root);
+        let printer = PrintSyntaxNode(&root);
+        assert_eq!(
+            printer.to_string(),
+            format!("(EXPR {})", expected),
+            "parse reslt doesn't match: \n{:#?}",
+            root
+        );
     }
 
     fn error_complete(language: Language, input: &str, expected: &str) {
@@ -758,7 +848,7 @@ mod test {
         let e = parser.expr();
         let text_width = e.text_width;
         let red = RedNodeData::root(e.clone().into());
-        tracing::debug!(%e);
+        tracing::info!(%e);
         tracing::debug!(pretty = %red.pretty_print());
         assert_eq!(
             e.to_string(),
@@ -773,6 +863,11 @@ mod test {
             parser.remaining()
         );
         assert_eq!(text_width, input.len());
+
+        let root: rowan::SyntaxNode<PrattLanguage> =
+            rowan::SyntaxNode::new_root(parser.builder.finish());
+        tracing::debug!("{:#?}", root);
+        let _printer = PrintSyntaxNode(&root);
     }
 
     #[test]

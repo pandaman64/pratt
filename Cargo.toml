@@ -8,6 +8,9 @@ edition = "2018"
 
 [dependencies]
 tracing = "0.1.21"
+rowan = "0.10.0"
+num-traits = "0.2.12"
+num-derive = "0.3.2"
 
 [dev-dependencies]
 tracing-subscriber = "0.2.12"
