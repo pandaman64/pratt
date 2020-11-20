@@ -1,5 +1,4 @@
 use std::fmt;
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, num_derive::FromPrimitive)]
 pub enum SyntaxKind {
@@ -19,10 +18,7 @@ impl SyntaxKind {
     fn trivial(&self) -> bool {
         use SyntaxKind::*;
 
-        match self {
-            Whitespace | Eof => true,
-            _ => false,
-        }
+        matches!(self, Whitespace | Eof)
     }
 
     fn non_trivial(&self) -> bool {
@@ -88,166 +84,8 @@ impl<'a> fmt::Display for Token<'a> {
 }
 
 impl<'a> Token<'a> {
-    fn error() -> Self {
-        Token {
-            kind: SyntaxKind::Error,
-            value: "",
-        }
-    }
-
     fn text_width(&self) -> usize {
         self.value.len()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeOrToken<'a> {
-    Token(Arc<Token<'a>>),
-    Node(Arc<GreenNode<'a>>),
-}
-
-impl<'a> NodeOrToken<'a> {
-    fn text_width(&self) -> usize {
-        match self {
-            NodeOrToken::Token(token) => token.value.len(),
-            NodeOrToken::Node(node) => node.text_width,
-        }
-    }
-
-    fn kind(&self) -> SyntaxKind {
-        match self {
-            NodeOrToken::Token(token) => token.kind,
-            NodeOrToken::Node(node) => node.kind,
-        }
-    }
-
-    fn children(&self) -> impl Iterator<Item = &NodeOrToken<'a>> {
-        let children = match self {
-            NodeOrToken::Token(_) => &[],
-            NodeOrToken::Node(node) => node.children.as_slice(),
-        };
-        children.iter()
-    }
-}
-
-impl fmt::Display for NodeOrToken<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            NodeOrToken::Token(token) => write!(f, "{}", token),
-            NodeOrToken::Node(node) => write!(f, "{}", node),
-        }
-    }
-}
-
-impl<'a> From<Token<'a>> for NodeOrToken<'a> {
-    fn from(token: Token<'a>) -> Self {
-        NodeOrToken::Token(Arc::new(token))
-    }
-}
-
-impl<'a> From<GreenNode<'a>> for NodeOrToken<'a> {
-    fn from(node: GreenNode<'a>) -> Self {
-        NodeOrToken::Node(Arc::new(node))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GreenNode<'a> {
-    kind: SyntaxKind,
-    text_width: usize,
-    children: Vec<NodeOrToken<'a>>,
-}
-
-impl<'a> GreenNode<'a> {
-    pub fn new(kind: SyntaxKind, children: Vec<NodeOrToken<'a>>) -> Self {
-        let text_width = children.iter().map(NodeOrToken::text_width).sum();
-        Self {
-            kind,
-            text_width,
-            children,
-        }
-    }
-
-    pub fn non_trivial(&self) -> impl Iterator<Item = &NodeOrToken<'a>> + '_ {
-        self.children
-            .iter()
-            .filter(|child| child.kind() != SyntaxKind::Whitespace)
-    }
-}
-
-impl fmt::Display for GreenNode<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "({}", self.kind)?;
-        for child in self.non_trivial() {
-            write!(f, " {}", child)?;
-        }
-        write!(f, ")")
-    }
-}
-
-pub type RedNode<'a> = Arc<RedNodeData<'a>>;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RedNodeData<'a> {
-    offset: usize,
-    parent: Option<RedNode<'a>>,
-    green: NodeOrToken<'a>,
-}
-
-impl<'a> RedNodeData<'a> {
-    pub fn root(root: NodeOrToken<'a>) -> RedNode<'a> {
-        Arc::new(RedNodeData {
-            offset: 0,
-            parent: None,
-            green: root,
-        })
-    }
-
-    pub fn parent(&self) -> Option<RedNode<'a>> {
-        self.parent.clone()
-    }
-
-    // elision seems not working
-    pub fn children<'s>(self: &'s RedNode<'a>) -> impl Iterator<Item = RedNode<'a>> + 's {
-        let mut offset = self.offset;
-        self.green.children().map(move |child| {
-            let child_offset = offset;
-            offset += child.text_width();
-            Arc::new(RedNodeData {
-                offset: child_offset,
-                parent: Some(self.clone()),
-                green: child.clone(),
-            })
-        })
-    }
-
-    pub fn pretty_print<'s>(self: &'s RedNode<'a>) -> impl fmt::Display + 's {
-        ShowRedNode::<'s, 'a>(self, 0)
-    }
-}
-
-#[derive(Debug)]
-struct ShowRedNode<'s, 'a>(&'s RedNode<'a>, usize);
-
-impl<'s, 'a> fmt::Display for ShowRedNode<'s, 'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let node = &self.0;
-        let level = self.1;
-        for _ in 0..level {
-            write!(f, "  ")?;
-        }
-        writeln!(
-            f,
-            "{}@{}..{}",
-            node.green.kind(),
-            node.offset,
-            node.offset + node.green.text_width()
-        )?;
-        for child in node.children() {
-            ShowRedNode(&child, level + 1).fmt(f)?;
-        }
-
-        Ok(())
     }
 }
 
@@ -413,46 +251,42 @@ impl<'a> Parser<'a> {
         self.peek_token_at(0)
     }
 
-    fn expect_token(&mut self, token: Token<'a>, children: &mut Vec<NodeOrToken<'a>>) {
+    fn expect_token(&mut self, token: Token<'a>) {
         let peeked = self.peek_token();
         if peeked == token {
-            self.next_token(children);
+            self.next_token();
         } else {
             self.push_error(format!("expected {:?}, got {:?}", token, peeked));
-            children.push(Token::error().into());
         }
     }
 
-    fn next_token(&mut self, children: &mut Vec<NodeOrToken<'a>>) {
+    fn next_token(&mut self) {
         let token = self.peek_token();
         self.advance(token.value.len());
         self.builder.token(token.kind.into(), token.value.into());
-        children.push(token.into());
     }
 
-    fn next_ident(&mut self, children: &mut Vec<NodeOrToken<'a>>) {
+    fn next_ident(&mut self) {
         let token = self.peek_token();
         match token.kind {
             SyntaxKind::Ident => {
                 self.advance(token.value.len());
                 self.builder.token(token.kind.into(), token.value.into());
-                children.push(token.into());
             }
             _ => {
                 self.push_error(format!("expected identifier, got {:?}", token));
-                children.push(Token::error().into());
             }
         }
     }
 
-    fn skip_ws(&mut self, children: &mut Vec<NodeOrToken<'a>>) {
+    fn skip_ws(&mut self) {
         let token = self.peek_token();
         if token.kind == SyntaxKind::Whitespace {
-            self.expect_token(token, children);
+            self.expect_token(token);
         }
     }
 
-    fn expect(&mut self, target: &str, children: &mut Vec<NodeOrToken<'a>>) {
+    fn expect(&mut self, target: &str) {
         if self.remaining().starts_with(target) {
             let token = Token {
                 kind: SyntaxKind::Symbol,
@@ -460,92 +294,75 @@ impl<'a> Parser<'a> {
             };
             self.builder
                 .token(SyntaxKind::Symbol.into(), token.value.into());
-            children.push(token.into());
             self.advance(target.len());
         } else {
             self.push_error(format!("expected {}, got {}", target, self.remaining()));
-            children.push(Token::error().into());
         }
     }
 
-    fn primary_expr(&mut self) -> GreenNode<'a> {
+    fn primary_expr(&mut self) {
         match self.peek_token() {
             token if token.kind == SyntaxKind::IntLit || token.kind == SyntaxKind::Ident => {
-                let mut children = vec![];
-                self.expect_token(token, &mut children);
-                GreenNode::new(SyntaxKind::Primitive, children)
+                self.expect_token(token);
             }
             token => {
                 self.push_error(format!("expected primary expr, got {:?}", token));
-                GreenNode::new(SyntaxKind::Error, vec![])
             }
         }
     }
 
-    fn parse_operator<F>(&mut self, op: &Operator<F>, children: &mut Vec<NodeOrToken<'a>>) {
+    fn parse_operator<F>(&mut self, op: &Operator<F>) {
         for i in 0..op.parts.len() {
-            self.expect(&op.parts[i], children);
-            self.skip_ws(children);
+            self.expect(&op.parts[i]);
+            self.skip_ws();
 
             if i < op.placeholders.len() {
                 match &op.placeholders[i].kind {
                     PlaceholderKind::Expr => {
-                        let node = self.expr_bp(0);
-                        children.push(node.into());
-                        self.skip_ws(children);
+                        let span = tracing::debug_span!("inside", part = %op.parts[i], i);
+                        let _enter = span.enter();
+                        self.expr_bp(0);
+                        self.skip_ws();
                     }
                     PlaceholderKind::Ident => {
-                        self.next_ident(children);
-                        self.skip_ws(children);
+                        self.next_ident();
+                        self.skip_ws();
                     }
                 }
             }
         }
     }
 
-    fn expr_bp(&mut self, min_bp: u16) -> GreenNode<'a> {
-        let span = tracing::span!(
-            tracing::Level::DEBUG,
-            "expr call",
-            min_bp,
-            remaining = self.remaining()
-        );
-        let _enter = span.enter();
-
+    fn expr_bp(&mut self, min_bp: u16) {
         let checkpoint = self.builder.checkpoint();
-        let mut lhs = if let Some(op) = self.peek_op_expr_start(0, |_| true) {
-            let mut children = vec![];
 
+        // indicates whether the parser can consume at least one token for an expression
+        // if false, an error is emitted and function application is not parsed
+        let mut valid_lhs = true;
+        if !self.starts_with_expr(0) {
+            self.push_error(format!("expected expr, got {:?}", self.peek_token()));
+            valid_lhs = false;
+        } else if let Some(op) = self.peek_op_expr_start(0, |_| true) {
             self.builder.start_node(SyntaxKind::Operator.into());
-            self.parse_operator(&op, &mut children);
+            self.parse_operator(&op);
 
             match op.fix {
                 ExprStart::Prefix { right_bp } => {
-                    let node = self.expr_bp(right_bp);
-                    children.push(node.into());
+                    let span = tracing::debug_span!("prefix", part = %op.parts[0], i = 0);
+                    let _enter = span.enter();
+                    self.expr_bp(right_bp)
                 }
                 ExprStart::Closed => {}
             }
 
             self.builder.finish_node();
-            GreenNode::new(SyntaxKind::Operator, children)
         } else {
             self.builder.start_node(SyntaxKind::Primitive.into());
-            let lhs = self.primary_expr();
+            self.primary_expr();
             self.builder.finish_node();
-            lhs
         };
 
         loop {
-            let span = tracing::span!(
-                tracing::Level::DEBUG,
-                "expr loop",
-                min_bp,
-                remaining = self.remaining()
-            );
-            let _enter = span.enter();
-            tracing::debug!(%lhs);
-
             let token = match self.peek_token() {
                 token if token.kind == SyntaxKind::Eof => break,
                 token
@@ -585,31 +402,26 @@ impl<'a> Parser<'a> {
 
                 self.builder
                     .start_node_at(checkpoint, SyntaxKind::Operator.into());
-                let mut children = vec![];
-                children.push(lhs.into());
-                self.skip_ws(&mut children);
+                self.skip_ws();
 
-                self.parse_operator(&op, &mut children);
+                self.parse_operator(&op);
 
                 match op.fix {
-                    ExprAfter::Postfix { .. } => {
-                        lhs = GreenNode::new(SyntaxKind::Operator, children);
-                        self.builder.finish_node();
-                        continue;
-                    }
                     ExprAfter::InfixL { bp } | ExprAfter::InfixR { bp } => {
-                        self.skip_ws(&mut children);
-                        let rhs = self.expr_bp(bp);
-                        children.push(rhs.into());
-                        lhs = GreenNode::new(SyntaxKind::Operator, children);
-                        self.builder.finish_node();
-                        continue;
+                        let span = tracing::debug_span!("infix", part = %op.parts[0], i = 0);
+                        let _enter = span.enter();
+                        self.skip_ws();
+                        self.expr_bp(bp);
                     }
+                    ExprAfter::Postfix { .. } => {}
                 }
+
+                self.builder.finish_node();
+                continue;
             }
 
             // parse function application if the next non-trivial token can start another expr
-            if lhs.kind != SyntaxKind::Error && self.starts_with_expr(skip_width) {
+            if valid_lhs && self.starts_with_expr(skip_width) {
                 // application is left associative
                 const APP_BP: u16 = 10000;
 
@@ -617,32 +429,30 @@ impl<'a> Parser<'a> {
                     break;
                 }
 
-                tracing::debug!("function application");
+                let span = tracing::debug_span!("app");
+                let _enter = span.enter();
+
                 self.builder
                     .start_node_at(checkpoint, SyntaxKind::Application.into());
-                let mut children = vec![];
-                children.push(lhs.into());
-                self.skip_ws(&mut children);
-                let rhs = self.expr_bp(APP_BP);
+                self.skip_ws();
+                let before_parse_rhs_len = self.remaining().len();
+                self.expr_bp(APP_BP);
                 // parsing of the argument must consume at least one token
-                assert_ne!(rhs.text_width, 0);
-                children.push(rhs.into());
-                lhs = GreenNode::new(SyntaxKind::Application, children);
+                assert_ne!(before_parse_rhs_len, self.remaining().len());
                 self.builder.finish_node();
                 continue;
             }
 
             break;
         }
-
-        lhs
     }
 
-    pub fn expr(&mut self) -> GreenNode<'a> {
+    pub fn expr(&mut self) {
         self.builder.start_node(SyntaxKind::ExprRoot.into());
-        let node = self.expr_bp(0);
+        self.skip_ws();
+        self.expr_bp(0);
+        self.skip_ws();
         self.builder.finish_node();
-        node
     }
 
     // The following functions traverse input token by token to support operators
@@ -703,10 +513,10 @@ impl<'a> Parser<'a> {
         if self.peek_op_expr_start(position, |_| true).is_some() {
             true
         } else {
-            match self.peek_token_at(position).kind {
-                SyntaxKind::Ident | SyntaxKind::IntLit => true,
-                _ => false,
-            }
+            matches!(
+                self.peek_token_at(position).kind,
+                SyntaxKind::Ident | SyntaxKind::IntLit
+            )
         }
     }
 }
@@ -807,77 +617,69 @@ mod test {
     }
 
     fn success_complete(language: Language, input: &str, expected: &str) {
+        use std::convert::TryInto;
         let _ = tracing_subscriber::fmt::try_init();
 
         let mut parser = Parser::new(input, language);
-        let e = parser.expr();
-        let text_width = e.text_width;
-        let red = RedNodeData::root(e.clone().into());
-        tracing::info!(%e);
-        tracing::debug!(pretty = %red.pretty_print());
-        assert_eq!(
-            e.to_string(),
-            expected,
-            "parse result doesn't match: \n{}",
-            red.pretty_print()
-        );
+        parser.expr();
         assert!(parser.errors.is_empty());
         assert!(
             parser.remaining().is_empty(),
             "input must be consumed, remaining: {}",
             parser.remaining()
         );
-        assert_eq!(text_width, input.len());
 
         let root: rowan::SyntaxNode<PrattLanguage> =
             rowan::SyntaxNode::new_root(parser.builder.finish());
-        tracing::debug!("{:#?}", root);
+        assert_eq!(root.text_range().len(), input.len().try_into().unwrap());
         let printer = PrintSyntaxNode(&root);
         assert_eq!(
             printer.to_string(),
-            format!("(EXPR {})", expected),
-            "parse reslt doesn't match: \n{:#?}",
-            root
+            expected,
+            "parse reslt doesn't match: \ninput = {}\n{:#?}",
+            input,
+            root,
         );
     }
 
     fn error_complete(language: Language, input: &str, expected: &str) {
+        use std::convert::TryInto;
         let _ = tracing_subscriber::fmt::try_init();
 
         let mut parser = Parser::new(input, language);
-        let e = parser.expr();
-        let text_width = e.text_width;
-        let red = RedNodeData::root(e.clone().into());
-        tracing::info!(%e);
-        tracing::debug!(pretty = %red.pretty_print());
-        assert_eq!(
-            e.to_string(),
-            expected,
-            "parse result doesn't match: \n{}",
-            red.pretty_print()
-        );
+        parser.expr();
         assert!(!parser.errors.is_empty());
         assert!(
             parser.remaining().is_empty(),
             "input must be consumed, remaining: {}",
             parser.remaining()
         );
-        assert_eq!(text_width, input.len());
 
         let root: rowan::SyntaxNode<PrattLanguage> =
             rowan::SyntaxNode::new_root(parser.builder.finish());
-        tracing::debug!("{:#?}", root);
-        let _printer = PrintSyntaxNode(&root);
+        assert_eq!(root.text_range().len(), input.len().try_into().unwrap());
+        let printer = PrintSyntaxNode(&root);
+        assert_eq!(
+            printer.to_string(),
+            expected,
+            "parse reslt doesn't match: \ninput = {}\n{:#?}",
+            input,
+            root,
+        );
     }
 
     #[test]
     fn test_intlit() {
-        success_complete(common_language(), "12345", "(PRIM 12345)");
+        success_complete(common_language(), "12345", "(EXPR (PRIM 12345))");
     }
 
     #[test]
     fn test_binop() {
-        success_complete(common_language(), "123 + 45", "(OP (PRIM 123) + (PRIM 45))");
+        success_complete(
+            common_language(),
+            "123 + 45",
+            "(EXPR (OP (PRIM 123) + (PRIM 45)))",
+        );
     }
 
     #[test]
@@ -885,7 +687,7 @@ mod test {
         success_complete(
             common_language(),
             "123 ^ 45 + 67",
-            "(OP (OP (PRIM 123) ^ (PRIM 45)) + (PRIM 67))",
+            "(EXPR (OP (OP (PRIM 123) ^ (PRIM 45)) + (PRIM 67)))",
         );
     }
 
@@ -894,7 +696,7 @@ mod test {
         success_complete(
             common_language(),
             "123 + 45 ^ 67",
-            "(OP (PRIM 123) + (OP (PRIM 45) ^ (PRIM 67)))",
+            "(EXPR (OP (PRIM 123) + (OP (PRIM 45) ^ (PRIM 67))))",
         );
     }
 
@@ -903,7 +705,7 @@ mod test {
         success_complete(
             common_language(),
             "123 + 45 + 67",
-            "(OP (OP (PRIM 123) + (PRIM 45)) + (PRIM 67))",
+            "(EXPR (OP (OP (PRIM 123) + (PRIM 45)) + (PRIM 67)))",
         );
     }
 
@@ -912,7 +714,7 @@ mod test {
         success_complete(
             common_language(),
             "2^3^4",
-            "(OP (PRIM 2) ^ (OP (PRIM 3) ^ (PRIM 4)))",
+            "(EXPR (OP (PRIM 2) ^ (OP (PRIM 3) ^ (PRIM 4))))",
         );
     }
 
@@ -921,7 +723,7 @@ mod test {
         success_complete(
             common_language(),
             "-2 + 5 + -4 ^ 2",
-            "(OP (OP (OP - (PRIM 2)) + (PRIM 5)) + (OP - (OP (PRIM 4) ^ (PRIM 2))))",
+            "(EXPR (OP (OP (OP - (PRIM 2)) + (PRIM 5)) + (OP - (OP (PRIM 4) ^ (PRIM 2)))))",
         );
     }
 
@@ -930,7 +732,7 @@ mod test {
         success_complete(
             common_language(),
             "1 - -2! + 3",
-            "(OP (OP (PRIM 1) - (OP - (OP (PRIM 2) !))) + (PRIM 3))",
+            "(EXPR (OP (OP (PRIM 1) - (OP - (OP (PRIM 2) !))) + (PRIM 3)))",
         );
     }
 
@@ -939,7 +741,7 @@ mod test {
         success_complete(
             common_language(),
             "-(2 + 5 + -4)^2",
-            "(OP - (OP (OP ( (OP (OP (PRIM 2) + (PRIM 5)) + (OP - (PRIM 4))) )) ^ (PRIM 2)))",
+            "(EXPR (OP - (OP (OP ( (OP (OP (PRIM 2) + (PRIM 5)) + (OP - (PRIM 4))) )) ^ (PRIM 2))))",
         );
     }
 
@@ -948,7 +750,7 @@ mod test {
         success_complete(
             common_language(),
             "a^3 + b^3 - c^3",
-            "(OP (OP (OP (PRIM a) ^ (PRIM 3)) + (OP (PRIM b) ^ (PRIM 3))) - (OP (PRIM c) ^ (PRIM 3)))",
+            "(EXPR (OP (OP (OP (PRIM a) ^ (PRIM 3)) + (OP (PRIM b) ^ (PRIM 3))) - (OP (PRIM c) ^ (PRIM 3))))",
         )
     }
 
@@ -957,7 +759,7 @@ mod test {
         success_complete(
             common_language(),
             "a_1 + b__",
-            "(OP (PRIM a_1) + (PRIM b__))",
+            "(EXPR (OP (PRIM a_1) + (PRIM b__)))",
         )
     }
 
@@ -966,7 +768,7 @@ mod test {
         success_complete(
             common_language(),
             "a^3 + b^3 = c^3",
-            "(OP (OP (OP (PRIM a) ^ (PRIM 3)) + (OP (PRIM b) ^ (PRIM 3))) = (OP (PRIM c) ^ (PRIM 3)))",
+            "(EXPR (OP (OP (OP (PRIM a) ^ (PRIM 3)) + (OP (PRIM b) ^ (PRIM 3))) = (OP (PRIM c) ^ (PRIM 3))))",
         )
     }
 
@@ -986,7 +788,7 @@ mod test {
         success_complete(
             language,
             "Γ ⊢t pre -> post",
-            "(OP (PRIM Γ) ⊢t (PRIM pre) -> (PRIM post))",
+            "(EXPR (OP (PRIM Γ) ⊢t (PRIM pre) -> (PRIM post)))",
         )
     }
 
@@ -1010,7 +812,7 @@ mod test {
         success_complete(
             language,
             "[| t |] = 100",
-            "(OP (OP [| (PRIM t) |]) = (PRIM 100))",
+            "(EXPR (OP (OP [| (PRIM t) |]) = (PRIM 100)))",
         )
     }
 
@@ -1019,7 +821,7 @@ mod test {
         success_complete(
             common_language(),
             "∀y. (fun x -> y) = fun z -> y",
-            "(OP ∀ y . (OP (OP ( (OP fun x -> (PRIM y)) )) = (OP fun z -> (PRIM y))))",
+            "(EXPR (OP ∀ y . (OP (OP ( (OP fun x -> (PRIM y)) )) = (OP fun z -> (PRIM y)))))",
         )
     }
 
@@ -1028,7 +830,16 @@ mod test {
         error_complete(
             common_language(),
             "∀. x = x",
-            "(OP ∀ ERROR . (OP (PRIM x) = (PRIM x)))",
+            "(EXPR (OP ∀ . (OP (PRIM x) = (PRIM x))))",
+        )
+    }
+
+    #[test]
+    fn test_no_missing() {
+        success_complete(
+            common_language(),
+            "1 + 2 = 3 ^ 4",
+            "(EXPR (OP (OP (PRIM 1) + (PRIM 2)) = (OP (PRIM 3) ^ (PRIM 4))))",
         )
     }
 
@@ -1036,14 +847,14 @@ mod test {
     fn test_missing() {
         error_complete(
             common_language(),
-            "∀. (3 + = ^2)",
-            "(OP ∀ ERROR . (OP ( (OP (OP (PRIM 3) + (ERROR)) = (OP (ERROR) ^ (PRIM 2))) )))",
+            "∀. (1 + = ^4)",
+            "(EXPR (OP ∀ . (OP ( (OP (OP (PRIM 1) +) = (OP ^ (PRIM 4))) ))))",
         )
     }
 
     #[test]
     fn test_simple() {
-        success_complete(common_language(), "(x)", "(OP ( (PRIM x) ))")
+        success_complete(common_language(), "(x)", "(EXPR (OP ( (PRIM x) )))")
     }
 
     #[test]
@@ -1051,7 +862,7 @@ mod test {
         success_complete(
             common_language(),
             "f x y",
-            "(APP (APP (PRIM f) (PRIM x)) (PRIM y))",
+            "(EXPR (APP (APP (PRIM f) (PRIM x)) (PRIM y)))",
         )
     }
 
@@ -1060,7 +871,7 @@ mod test {
         success_complete(
             common_language(),
             "f (x)",
-            "(APP (PRIM f) (OP ( (PRIM x) )))",
+            "(EXPR (APP (PRIM f) (OP ( (PRIM x) ))))",
         )
     }
 
@@ -1069,7 +880,7 @@ mod test {
         success_complete(
             common_language(),
             "f x + g (y - z)",
-            "(OP (APP (PRIM f) (PRIM x)) + (APP (PRIM g) (OP ( (OP (PRIM y) - (PRIM z)) ))))",
+            "(EXPR (OP (APP (PRIM f) (PRIM x)) + (APP (PRIM g) (OP ( (OP (PRIM y) - (PRIM z)) )))))",
         )
     }
 
@@ -1078,13 +889,13 @@ mod test {
         error_complete(
             common_language(),
             "((((4",
-            "(OP ( (OP ( (OP ( (OP ( (PRIM 4) ERROR) ERROR) ERROR) ERROR)",
+            "(EXPR (OP ( (OP ( (OP ( (OP ( (PRIM 4))))))",
         )
     }
 
     #[test]
     fn test_empty_error() {
-        error_complete(common_language(), "", "(ERROR)")
+        error_complete(common_language(), "", "(EXPR)")
     }
 
     #[test]
@@ -1092,7 +903,7 @@ mod test {
         success_complete(
             common_language(),
             "{f. ∀x. f (f x) = f}",
-            "(OP { f . (OP ∀ x . (OP (APP (PRIM f) (OP ( (APP (PRIM f) (PRIM x)) ))) = (PRIM f))) })",
+            "(EXPR (OP { f . (OP ∀ x . (OP (APP (PRIM f) (OP ( (APP (PRIM f) (PRIM x)) ))) = (PRIM f))) }))",
         )
     }
 
@@ -1102,7 +913,7 @@ mod test {
         success_complete(
             common_language(),
             "let f = fun x -> x; f 100 - 200",
-            "(OP let f = (OP fun x -> (PRIM x)) ; (OP (APP (PRIM f) (PRIM 100)) - (PRIM 200)))",
+            "(EXPR (OP let f = (OP fun x -> (PRIM x)) ; (OP (APP (PRIM f) (PRIM 100)) - (PRIM 200))))",
         )
     }
 }
