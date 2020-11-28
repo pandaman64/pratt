@@ -144,6 +144,55 @@ pub struct Operator<F> {
     placeholders: Vec<Placeholder>,
 }
 
+impl Operator<ExprStart> {
+    pub fn prefix(right_bp: u16, parts: Vec<String>, placeholders: Vec<Placeholder>) -> Self {
+        assert_eq!(parts.len(), placeholders.len() + 1);
+        Self {
+            fix: ExprStart::Prefix { right_bp },
+            parts,
+            placeholders,
+        }
+    }
+
+    pub fn closed(parts: Vec<String>, placeholders: Vec<Placeholder>) -> Self {
+        assert_eq!(parts.len(), placeholders.len() + 1);
+        Self {
+            fix: ExprStart::Closed,
+            parts,
+            placeholders,
+        }
+    }
+}
+
+impl Operator<ExprAfter> {
+    pub fn infixl(bp: u16, parts: Vec<String>, placeholders: Vec<Placeholder>) -> Self {
+        assert_eq!(parts.len(), placeholders.len() + 1);
+        Self {
+            fix: ExprAfter::InfixL { bp },
+            parts,
+            placeholders,
+        }
+    }
+
+    pub fn infixr(bp: u16, parts: Vec<String>, placeholders: Vec<Placeholder>) -> Self {
+        assert_eq!(parts.len(), placeholders.len() + 1);
+        Self {
+            fix: ExprAfter::InfixR { bp },
+            parts,
+            placeholders,
+        }
+    }
+
+    pub fn postfix(left_bp: u16, parts: Vec<String>, placeholders: Vec<Placeholder>) -> Self {
+        assert_eq!(parts.len(), placeholders.len() + 1);
+        Self {
+            fix: ExprAfter::Postfix { left_bp },
+            parts,
+            placeholders,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Language {
     pub expr_start: Vec<Operator<ExprStart>>,
@@ -526,39 +575,33 @@ mod test {
     fn common_language() -> Language {
         Language {
             expr_start: vec![
-                Operator {
-                    fix: ExprStart::Prefix { right_bp: 60 },
-                    parts: vec!["-".into()],
-                    placeholders: vec![],
-                },
-                Operator {
-                    fix: ExprStart::Closed,
-                    parts: vec!["(".into(), ")".into()],
-                    placeholders: vec![Placeholder {
+                Operator::prefix(60, vec!["-".into()], vec![]),
+                Operator::closed(
+                    vec!["(".into(), ")".into()],
+                    vec![Placeholder {
                         kind: PlaceholderKind::Expr,
                         name: "expr".into(),
                     }],
-                },
-                Operator {
-                    fix: ExprStart::Prefix { right_bp: 10 },
-                    parts: vec!["∀".into(), ".".into()],
-                    placeholders: vec![Placeholder {
+                ),
+                Operator::prefix(
+                    10,
+                    vec!["∀".into(), ".".into()],
+                    vec![Placeholder {
                         kind: PlaceholderKind::Ident,
                         name: "var".into(),
                     }],
-                },
-                Operator {
-                    fix: ExprStart::Prefix { right_bp: 0 },
-                    parts: vec!["fun".into(), "->".into()],
-                    placeholders: vec![Placeholder {
+                ),
+                Operator::prefix(
+                    0,
+                    vec!["fun".into(), "->".into()],
+                    vec![Placeholder {
                         kind: PlaceholderKind::Ident,
                         name: "var".into(),
                     }],
-                },
-                Operator {
-                    fix: ExprStart::Closed,
-                    parts: vec!["{".into(), ".".into(), "}".into()],
-                    placeholders: vec![
+                ),
+                Operator::closed(
+                    vec!["{".into(), ".".into(), "}".into()],
+                    vec![
                         Placeholder {
                             kind: PlaceholderKind::Ident,
                             name: "var".into(),
@@ -568,11 +611,11 @@ mod test {
                             name: "pred".into(),
                         },
                     ],
-                },
-                Operator {
-                    fix: ExprStart::Prefix { right_bp: 0 },
-                    parts: vec!["let".into(), "=".into(), ";".into()],
-                    placeholders: vec![
+                ),
+                Operator::prefix(
+                    0,
+                    vec!["let".into(), "=".into(), ";".into()],
+                    vec![
                         Placeholder {
                             kind: PlaceholderKind::Ident,
                             name: "var".into(),
@@ -582,34 +625,14 @@ mod test {
                             name: "pred".into(),
                         },
                     ],
-                },
+                ),
             ],
             expr_after: vec![
-                Operator {
-                    fix: ExprAfter::InfixL { bp: 20 },
-                    parts: vec!["=".into()],
-                    placeholders: vec![],
-                },
-                Operator {
-                    fix: ExprAfter::InfixL { bp: 50 },
-                    parts: vec!["+".into()],
-                    placeholders: vec![],
-                },
-                Operator {
-                    fix: ExprAfter::InfixL { bp: 50 },
-                    parts: vec!["-".into()],
-                    placeholders: vec![],
-                },
-                Operator {
-                    fix: ExprAfter::InfixR { bp: 80 },
-                    parts: vec!["^".into()],
-                    placeholders: vec![],
-                },
-                Operator {
-                    fix: ExprAfter::Postfix { left_bp: 70 },
-                    parts: vec!["!".into()],
-                    placeholders: vec![],
-                },
+                Operator::infixl(20, vec!["=".into()], vec![]),
+                Operator::infixl(50, vec!["+".into()], vec![]),
+                Operator::infixl(50, vec!["-".into()], vec![]),
+                Operator::infixr(80, vec!["^".into()], vec![]),
+                Operator::postfix(70, vec!["!".into()], vec![]),
             ],
         }
     }
