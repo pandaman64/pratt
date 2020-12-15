@@ -37,6 +37,15 @@ pub enum FollowingOpKind {
     Infix { left_bp: u16, right_bp: u16 },
 }
 
+impl FollowingOpKind {
+    fn left_bp(&self) -> u16 {
+        match self {
+            FollowingOpKind::Postfix { left_bp } => *left_bp,
+            FollowingOpKind::Infix { left_bp, .. } => *left_bp,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Operator<K> {
     kind: K,
@@ -126,80 +135,84 @@ pub fn parse_atom(input: &mut Input<'_>) -> SExpr {
     }
 }
 
-fn following_operator_lbp(operator: char) -> Option<u16> {
-    match operator {
-        '?' => Some(20),
-        '+' => Some(50),
-        '-' => Some(50),
-        '*' => Some(80),
-        _ => None,
-    }
-}
+fn parse_expr_bp(language: &Language, input: &mut Input<'_>, min_bp: u16) -> SExpr {
+    let mut leading_expr = {
+        let mut expr = None;
+        let c = input.peek().unwrap();
 
-fn parse_expr_bp(input: &mut Input<'_>, min_bp: u16) -> SExpr {
-    let mut leading_expr = match input.peek().unwrap() {
-        '-' => {
-            const NEG_RBP: u16 = 51;
-            input.bump(); // '-'を消費
-            let following_expr = parse_expr_bp(input, NEG_RBP);
-            SExpr::List(vec![SExpr::Atom("-".into()), following_expr])
+        for leading_operator in language.leading_operators.iter() {
+            // 先行演算子にマッチ
+            if leading_operator.symbols[0] == c {
+                input.bump();
+                let mut children = vec![SExpr::Atom(leading_operator.name.clone())];
+                for symbol in leading_operator.symbols[1..].iter() {
+                    let inner_expr = parse_expr_bp(language, input, 0);
+                    children.push(inner_expr);
+
+                    assert_eq!(input.peek().unwrap(), *symbol);
+                    input.bump();
+                }
+
+                // prefix演算子の場合は後ろに続く式をパース
+                if let LeadingOpKind::Prefix { right_bp } = leading_operator.kind {
+                    let following_expr = parse_expr_bp(language, input, right_bp);
+                    children.push(following_expr);
+                }
+
+                expr = Some(SExpr::List(children));
+            }
         }
-        '(' => {
-            input.bump(); // '('を消費
-            let following_expr = parse_expr_bp(input, 0);
 
-            // ')'が来なければいけない
-            assert!(matches!(input.peek(), Some(')')));
-            input.bump();
-
-            SExpr::List(vec![SExpr::Atom("paren".into()), following_expr])
+        match expr {
+            Some(expr) => expr,
+            // マッチする先行演算子が無かった
+            None => parse_atom(input),
         }
-        _ => parse_atom(input),
     };
 
-    loop {
+    'main: loop {
         match input.peek() {
             None => return leading_expr,
             Some(c) => {
-                if matches!(following_operator_lbp(c), Some(bp) if bp <= min_bp) {
-                    return leading_expr;
-                }
-            }
-        }
+                for following_operator in language.following_operators.iter() {
+                    // 後続演算子にマッチ
+                    if following_operator.symbols[0] == c {
+                        // 演算子の優先順位が足りない場合はやめる
+                        if following_operator.kind.left_bp() <= min_bp {
+                            return leading_expr;
+                        }
 
-        match input.peek() {
-            Some('?') => {
-                input.bump();
-                leading_expr = SExpr::List(vec![SExpr::Atom("?".into()), leading_expr]);
+                        input.bump();
+                        let mut children =
+                            vec![SExpr::Atom(following_operator.name.clone()), leading_expr];
+                        for symbol in following_operator.symbols[1..].iter() {
+                            let inner_expr = parse_expr_bp(language, input, 0);
+                            children.push(inner_expr);
+
+                            assert_eq!(input.peek().unwrap(), *symbol);
+                            input.bump();
+                        }
+
+                        // infix演算子の場合は後ろに続く式をパース
+                        if let FollowingOpKind::Infix { right_bp, .. } = following_operator.kind {
+                            let following_expr = parse_expr_bp(language, input, right_bp);
+                            children.push(following_expr);
+                        }
+
+                        leading_expr = SExpr::List(children);
+                        continue 'main;
+                    }
+                }
+
+                // 後続演算子にマッチしなかった
+                return leading_expr;
             }
-            Some('+') => {
-                const PLUS_RBP: u16 = 51;
-                input.bump();
-                let following_expr = parse_expr_bp(input, PLUS_RBP);
-                leading_expr =
-                    SExpr::List(vec![SExpr::Atom("+".into()), leading_expr, following_expr]);
-            }
-            Some('-') => {
-                const MINUS_RBP: u16 = 51;
-                input.bump();
-                let following_expr = parse_expr_bp(input, MINUS_RBP);
-                leading_expr =
-                    SExpr::List(vec![SExpr::Atom("-".into()), leading_expr, following_expr]);
-            }
-            Some('*') => {
-                const MULT_RBP: u16 = 81;
-                input.bump();
-                let following_expr = parse_expr_bp(input, MULT_RBP);
-                leading_expr =
-                    SExpr::List(vec![SExpr::Atom("*".into()), leading_expr, following_expr]);
-            }
-            _ => return leading_expr,
         }
     }
 }
 
-pub fn parse_expr(input: &mut Input<'_>) -> SExpr {
-    parse_expr_bp(input, 0)
+pub fn parse_expr(language: &Language, input: &mut Input<'_>) -> SExpr {
+    parse_expr_bp(language, input, 0)
 }
 
 #[cfg(test)]
@@ -230,8 +243,20 @@ mod test {
 
     // パースした結果として入力が全て消費され想定通りのS式が得られているかチェックする
     fn complete_parse(input: &str, expected: &str) {
+        let language = Language::new(
+            vec![
+                prefix("-".into(), vec!['-'], 51),
+                paren("paren".into(), vec!['(', ')']),
+            ],
+            vec![
+                postfix("?".into(), vec!['?'], 20),
+                infix("+".into(), vec!['+'], 50, 51),
+                infix("-".into(), vec!['-'], 50, 51),
+                infix("*".into(), vec!['*'], 80, 81),
+            ],
+        );
         let mut input = Input::new(input);
-        let e = parse_expr(&mut input);
+        let e = parse_expr(&language, &mut input);
 
         assert_eq!(e.to_string(), expected);
         assert!(input.peek().is_none());
