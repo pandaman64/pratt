@@ -57,16 +57,27 @@ pub fn parse_atom(input: &mut Input<'_>) -> SExpr {
     }
 }
 
-pub fn parse_expr(input: &mut Input<'_>) -> SExpr {
+fn following_operator_lbp(operator: char) -> Option<u16> {
+    match operator {
+        '?' => Some(20),
+        '+' => Some(50),
+        '-' => Some(50),
+        '*' => Some(80),
+        _ => None,
+    }
+}
+
+fn parse_expr_bp(input: &mut Input<'_>, min_bp: u16) -> SExpr {
     let leading_expr = match input.peek().unwrap() {
         '-' => {
+            const NEG_RBP: u16 = 51;
             input.bump(); // '-'を消費
-            let following_expr = parse_expr(input);
+            let following_expr = parse_expr_bp(input, NEG_RBP);
             SExpr::List(vec![SExpr::Atom("-".into()), following_expr])
         }
         '(' => {
             input.bump(); // '('を消費
-            let following_expr = parse_expr(input);
+            let following_expr = parse_expr_bp(input, 0);
 
             // ')'が来なければいけない
             assert!(matches!(input.peek(), Some(')')));
@@ -78,27 +89,43 @@ pub fn parse_expr(input: &mut Input<'_>) -> SExpr {
     };
 
     match input.peek() {
+        None => return leading_expr,
+        Some(c) => {
+            if matches!(following_operator_lbp(c), Some(bp) if bp <= min_bp) {
+                return leading_expr;
+            }
+        }
+    }
+
+    match input.peek() {
         Some('?') => {
             input.bump();
             SExpr::List(vec![SExpr::Atom("?".into()), leading_expr])
         }
         Some('+') => {
+            const PLUS_RBP: u16 = 51;
             input.bump();
-            let following_expr = parse_expr(input);
+            let following_expr = parse_expr_bp(input, PLUS_RBP);
             SExpr::List(vec![SExpr::Atom("+".into()), leading_expr, following_expr])
         }
         Some('-') => {
+            const MINUS_RBP: u16 = 51;
             input.bump();
-            let following_expr = parse_expr(input);
+            let following_expr = parse_expr_bp(input, MINUS_RBP);
             SExpr::List(vec![SExpr::Atom("-".into()), leading_expr, following_expr])
         }
         Some('*') => {
+            const MULT_RBP: u16 = 81;
             input.bump();
-            let following_expr = parse_expr(input);
+            let following_expr = parse_expr_bp(input, MULT_RBP);
             SExpr::List(vec![SExpr::Atom("*".into()), leading_expr, following_expr])
         }
         _ => leading_expr,
     }
+}
+
+pub fn parse_expr(input: &mut Input<'_>) -> SExpr {
+    parse_expr_bp(input, 0)
 }
 
 #[cfg(test)]
