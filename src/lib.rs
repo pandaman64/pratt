@@ -47,9 +47,19 @@ impl<'s> Input<'s> {
     }
 }
 
+pub fn parse_atom(input: &mut Input<'_>) -> SExpr {
+    match input.peek().unwrap() {
+        c if c.is_ascii_digit() => {
+            input.bump(); // 数値を入力から消費
+            SExpr::Atom(c.into())
+        },
+        c => panic!("expected an atom, got {}", c),
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use crate::SExpr;
+    use super::*;
 
     #[test]
     fn test_sexpr_print() {
@@ -64,5 +74,12 @@ mod test {
         ]);
 
         assert_eq!(e.to_string(), "(+ 1 (+ 2 3))");
+    }
+
+    #[test]
+    fn test_atom() {
+        let e = parse_atom(&mut Input::new("3"));
+
+        assert_eq!(e.to_string(), "3");
     }
 }
