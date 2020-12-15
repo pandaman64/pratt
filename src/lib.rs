@@ -92,6 +92,11 @@ pub fn parse_expr(input: &mut Input<'_>) -> SExpr {
             let following_expr = parse_expr(input);
             SExpr::List(vec![SExpr::Atom("-".into()), leading_expr, following_expr])
         }
+        Some('*') => {
+            input.bump();
+            let following_expr = parse_expr(input);
+            SExpr::List(vec![SExpr::Atom("*".into()), leading_expr, following_expr])
+        }
         _ => leading_expr,
     }
 }
@@ -164,5 +169,15 @@ mod test {
     #[test]
     fn test_different_position() {
         complete_parse("1--2", "(- 1 (- 2))")
+    }
+
+    #[test]
+    fn test_infix_assoc() {
+        complete_parse("1+2+3", "(+ (+ 1 2) 3)")
+    }
+
+    #[test]
+    fn test_infix_prec() {
+        complete_parse("1*2+3", "(+ (* 1 2) 3)")
     }
 }
