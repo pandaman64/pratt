@@ -58,7 +58,14 @@ pub fn parse_atom(input: &mut Input<'_>) -> SExpr {
 }
 
 pub fn parse_expr(input: &mut Input<'_>) -> SExpr {
-    parse_atom(input)
+    match input.peek().unwrap() {
+        '-' => {
+            input.bump(); // '-'を消費
+            let following_expr = parse_expr(input);
+            SExpr::List(vec![SExpr::Atom("-".into()), following_expr])
+        }
+        _ => parse_atom(input),
+    }
 }
 
 #[cfg(test)]
@@ -99,5 +106,10 @@ mod test {
     #[test]
     fn test_atom_expr() {
         complete_parse("7", "7")
+    }
+
+    #[test]
+    fn test_simple_prefix() {
+        complete_parse("-8", "(- 8)")
     }
 }
