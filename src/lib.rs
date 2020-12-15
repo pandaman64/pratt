@@ -82,6 +82,11 @@ pub fn parse_expr(input: &mut Input<'_>) -> SExpr {
             input.bump();
             SExpr::List(vec![SExpr::Atom("?".into()), leading_expr])
         }
+        Some('+') => {
+            input.bump();
+            let following_expr = parse_expr(input);
+            SExpr::List(vec![SExpr::Atom("+".into()), leading_expr, following_expr])
+        }
         _ => leading_expr,
     }
 }
@@ -139,5 +144,15 @@ mod test {
     #[test]
     fn test_simple_postfix() {
         complete_parse("1?", "(? 1)")
+    }
+
+    #[test]
+    fn test_simple_infix() {
+        complete_parse("1+2", "(+ 1 2)")
+    }
+
+    #[test]
+    fn test_infix_and_prefix() {
+        complete_parse("1+-2", "(+ 1 (- 2))")
     }
 }
