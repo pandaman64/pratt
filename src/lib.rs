@@ -64,6 +64,16 @@ pub fn parse_expr(input: &mut Input<'_>) -> SExpr {
             let following_expr = parse_expr(input);
             SExpr::List(vec![SExpr::Atom("-".into()), following_expr])
         }
+        '(' => {
+            input.bump(); // '('を消費
+            let following_expr = parse_expr(input);
+
+            // ')'が来なければいけない
+            assert!(matches!(input.peek(), Some(')')));
+            input.bump();
+
+            SExpr::List(vec![SExpr::Atom("paren".into()), following_expr])
+        }
         _ => parse_atom(input),
     }
 }
@@ -111,5 +121,10 @@ mod test {
     #[test]
     fn test_simple_prefix() {
         complete_parse("-8", "(- 8)")
+    }
+
+    #[test]
+    fn test_paren() {
+        complete_parse("(-1)", "(paren (- 1))")
     }
 }
