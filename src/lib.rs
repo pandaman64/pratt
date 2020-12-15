@@ -246,13 +246,16 @@ mod test {
         let language = Language::new(
             vec![
                 prefix("-".into(), vec!['-'], 51),
+                prefix("if-then-else".into(), vec!['I', 'T', 'E'], 41),
                 paren("paren".into(), vec!['(', ')']),
             ],
             vec![
                 postfix("?".into(), vec!['?'], 20),
+                postfix("subscript".into(), vec!['[', ']'], 100),
                 infix("+".into(), vec!['+'], 50, 51),
                 infix("-".into(), vec!['-'], 50, 51),
                 infix("*".into(), vec!['*'], 80, 81),
+                infix("=".into(), vec!['='], 21, 20),
             ],
         );
         let mut input = Input::new(input);
@@ -305,5 +308,13 @@ mod test {
     #[test]
     fn test_infix_prec() {
         complete_parse("1*2+3", "(+ (* 1 2) 3)")
+    }
+
+    #[test]
+    fn test_complex() {
+        complete_parse(
+            "1=2=I(3)T(4)E(5[6])",
+            "(= 1 (= 2 (if-then-else (paren 3) (paren 4) (paren (subscript 5 6)))))",
+        )
     }
 }
