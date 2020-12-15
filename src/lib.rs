@@ -52,9 +52,13 @@ pub fn parse_atom(input: &mut Input<'_>) -> SExpr {
         c if c.is_ascii_digit() => {
             input.bump(); // 数値を入力から消費
             SExpr::Atom(c.into())
-        },
+        }
         c => panic!("expected an atom, got {}", c),
     }
+}
+
+pub fn parse_expr(input: &mut Input<'_>) -> SExpr {
+    parse_atom(input)
 }
 
 #[cfg(test)]
@@ -81,5 +85,19 @@ mod test {
         let e = parse_atom(&mut Input::new("3"));
 
         assert_eq!(e.to_string(), "3");
+    }
+
+    // パースした結果として入力が全て消費され想定通りのS式が得られているかチェックする
+    fn complete_parse(input: &str, expected: &str) {
+        let mut input = Input::new(input);
+        let e = parse_expr(&mut input);
+
+        assert_eq!(e.to_string(), expected);
+        assert!(input.peek().is_none());
+    }
+
+    #[test]
+    fn test_atom_expr() {
+        complete_parse("7", "7")
     }
 }
