@@ -68,7 +68,7 @@ fn following_operator_lbp(operator: char) -> Option<u16> {
 }
 
 fn parse_expr_bp(input: &mut Input<'_>, min_bp: u16) -> SExpr {
-    let leading_expr = match input.peek().unwrap() {
+    let mut leading_expr = match input.peek().unwrap() {
         '-' => {
             const NEG_RBP: u16 = 51;
             input.bump(); // '-'を消費
@@ -88,39 +88,44 @@ fn parse_expr_bp(input: &mut Input<'_>, min_bp: u16) -> SExpr {
         _ => parse_atom(input),
     };
 
-    match input.peek() {
-        None => return leading_expr,
-        Some(c) => {
-            if matches!(following_operator_lbp(c), Some(bp) if bp <= min_bp) {
-                return leading_expr;
+    loop {
+        match input.peek() {
+            None => return leading_expr,
+            Some(c) => {
+                if matches!(following_operator_lbp(c), Some(bp) if bp <= min_bp) {
+                    return leading_expr;
+                }
             }
         }
-    }
 
-    match input.peek() {
-        Some('?') => {
-            input.bump();
-            SExpr::List(vec![SExpr::Atom("?".into()), leading_expr])
+        match input.peek() {
+            Some('?') => {
+                input.bump();
+                leading_expr = SExpr::List(vec![SExpr::Atom("?".into()), leading_expr]);
+            }
+            Some('+') => {
+                const PLUS_RBP: u16 = 51;
+                input.bump();
+                let following_expr = parse_expr_bp(input, PLUS_RBP);
+                leading_expr =
+                    SExpr::List(vec![SExpr::Atom("+".into()), leading_expr, following_expr]);
+            }
+            Some('-') => {
+                const MINUS_RBP: u16 = 51;
+                input.bump();
+                let following_expr = parse_expr_bp(input, MINUS_RBP);
+                leading_expr =
+                    SExpr::List(vec![SExpr::Atom("-".into()), leading_expr, following_expr]);
+            }
+            Some('*') => {
+                const MULT_RBP: u16 = 81;
+                input.bump();
+                let following_expr = parse_expr_bp(input, MULT_RBP);
+                leading_expr =
+                    SExpr::List(vec![SExpr::Atom("*".into()), leading_expr, following_expr]);
+            }
+            _ => return leading_expr,
         }
-        Some('+') => {
-            const PLUS_RBP: u16 = 51;
-            input.bump();
-            let following_expr = parse_expr_bp(input, PLUS_RBP);
-            SExpr::List(vec![SExpr::Atom("+".into()), leading_expr, following_expr])
-        }
-        Some('-') => {
-            const MINUS_RBP: u16 = 51;
-            input.bump();
-            let following_expr = parse_expr_bp(input, MINUS_RBP);
-            SExpr::List(vec![SExpr::Atom("-".into()), leading_expr, following_expr])
-        }
-        Some('*') => {
-            const MULT_RBP: u16 = 81;
-            input.bump();
-            let following_expr = parse_expr_bp(input, MULT_RBP);
-            SExpr::List(vec![SExpr::Atom("*".into()), leading_expr, following_expr])
-        }
-        _ => leading_expr,
     }
 }
 
