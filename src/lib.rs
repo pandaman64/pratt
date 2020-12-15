@@ -25,6 +25,28 @@ impl fmt::Display for SExpr {
     }
 }
 
+#[derive(Debug)]
+pub struct Input<'s> {
+    text: &'s str,
+    position: usize,
+}
+
+impl<'s> Input<'s> {
+    pub fn new(text: &'s str) -> Self {
+        Self { text, position: 0 }
+    }
+
+    // 現在の場所から1文字読む
+    pub fn peek(&self) -> Option<char> {
+        self.text[self.position..].chars().next()
+    }
+
+    // 現在の場所を1文字分進める
+    pub fn bump(&mut self) {
+        self.position += self.peek().unwrap().len_utf8();
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::SExpr;
