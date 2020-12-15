@@ -58,7 +58,7 @@ pub fn parse_atom(input: &mut Input<'_>) -> SExpr {
 }
 
 pub fn parse_expr(input: &mut Input<'_>) -> SExpr {
-    match input.peek().unwrap() {
+    let leading_expr = match input.peek().unwrap() {
         '-' => {
             input.bump(); // '-'を消費
             let following_expr = parse_expr(input);
@@ -75,6 +75,14 @@ pub fn parse_expr(input: &mut Input<'_>) -> SExpr {
             SExpr::List(vec![SExpr::Atom("paren".into()), following_expr])
         }
         _ => parse_atom(input),
+    };
+
+    match input.peek() {
+        Some('?') => {
+            input.bump();
+            SExpr::List(vec![SExpr::Atom("?".into()), leading_expr])
+        }
+        _ => leading_expr,
     }
 }
 
@@ -126,5 +134,10 @@ mod test {
     #[test]
     fn test_paren() {
         complete_parse("(-1)", "(paren (- 1))")
+    }
+
+    #[test]
+    fn test_simple_postfix() {
+        complete_parse("1?", "(? 1)")
     }
 }
