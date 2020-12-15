@@ -25,6 +25,75 @@ impl fmt::Display for SExpr {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum LeadingOpKind {
+    Prefix { right_bp: u16 },
+    Paren,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum FollowingOpKind {
+    Postfix { left_bp: u16 },
+    Infix { left_bp: u16, right_bp: u16 },
+}
+
+#[derive(Debug)]
+pub struct Operator<K> {
+    kind: K,
+    name: String,
+    symbols: Vec<char>,
+}
+
+pub type LeadingOp = Operator<LeadingOpKind>;
+pub type FollowingOp = Operator<FollowingOpKind>;
+
+pub fn prefix(name: String, symbols: Vec<char>, right_bp: u16) -> LeadingOp {
+    LeadingOp {
+        kind: LeadingOpKind::Prefix { right_bp },
+        name,
+        symbols,
+    }
+}
+
+pub fn paren(name: String, symbols: Vec<char>) -> LeadingOp {
+    LeadingOp {
+        kind: LeadingOpKind::Paren,
+        name,
+        symbols,
+    }
+}
+
+pub fn postfix(name: String, symbols: Vec<char>, left_bp: u16) -> FollowingOp {
+    FollowingOp {
+        kind: FollowingOpKind::Postfix { left_bp },
+        name,
+        symbols,
+    }
+}
+
+pub fn infix(name: String, symbols: Vec<char>, left_bp: u16, right_bp: u16) -> FollowingOp {
+    FollowingOp {
+        kind: FollowingOpKind::Infix { left_bp, right_bp },
+        name,
+        symbols,
+    }
+}
+
+#[derive(Debug)]
+pub struct Language {
+    leading_operators: Vec<LeadingOp>,
+    following_operators: Vec<FollowingOp>,
+}
+
+impl Language {
+    pub fn new(leading_operators: Vec<LeadingOp>, following_operators: Vec<FollowingOp>) -> Self {
+        Self {
+            leading_operators,
+            following_operators,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Input<'s> {
     text: &'s str,
